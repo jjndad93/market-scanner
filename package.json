@@ -1,0 +1,15 @@
+{
+  "name": "market-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Morning market scanner and call-option evaluator. Research tool only: no brokerage connection, no orders, no automated trading.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "option": "node src/cli.ts option",
+    "scan": "node src/cli.ts scan"
+  }
+}

@@ -1,0 +1,18 @@
+# HYPOTHETICAL TEST DATA - invented numbers for a fictional ticker (XMPL).
+# These are NOT real market quotes. Replace them with the details you copy from your broker.
+Underlying: XMPL
+Stock price: 52.40
+Type: Call
+Strike: 55
+Expiration: 2026-12-18
+Bid: 2.35
+Ask: 2.45
+Premium: 2.45
+Volume: 1,180
+Open interest: 6,420
+IV: 38.2%
+Delta: 0.41
+Quote time: 2026-10-20 10:15 ET
+Earnings date: 2026-11-05
+Historical volatility: 33%
+Dividend yield: 0%
