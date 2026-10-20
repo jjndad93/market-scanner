@@ -31,8 +31,11 @@ const firstAsset = (raw: RawAsset) => normalizeDataset({ dataset: SYN, assets: [
 
 // ---- Normalization and honest labeling --------------------------------------------------------
 
-test('only synthetic datasets are accepted in P1, so fixtures cannot be passed off as live data', () => {
-  assert.throws(() => normalizeDataset({ dataset: { ...SYN, kind: 'live' }, assets: [] }), /Only synthetic test datasets/);
+test('dataset headers are validated: unknown kinds, and live data without attribution, are rejected', () => {
+  // P2 S1: "live" is now a valid kind (deliberate change from P1), but only with attribution.
+  assert.throws(() => normalizeDataset({ dataset: { ...SYN, kind: 'bogus' }, assets: [] }), /Unknown dataset kind/);
+  assert.throws(() => normalizeDataset({ dataset: { ...SYN, kind: 'live' }, assets: [] }), /attribution/);
+  assert.throws(() => normalizeDataset({ dataset: { ...SYN, kind: 'live', attribution: 'x', notes: [1] }, assets: [] }), /notes/);
   assert.throws(() => normalizeDataset({ assets: [] }), /dataset/);
   assert.throws(() => normalizeDataset({ dataset: { ...SYN, asOf: 'yesterday' }, assets: [] }), /asOf/);
 });
@@ -503,4 +506,38 @@ test('D3: the history window comes from the rules passed to normalization', () =
 test('D3: scanning with a different history window than normalization fails loudly', () => {
   const data = normalizeDataset({ dataset: SYN, assets: [mover({ id: 'w' })] });
   assert.throws(() => runScan(data, NOW, { ...SCAN_RULES, historyWindowDays: 20 }), /history window/);
+});
+
+// ---- P2 S1: live datasets (values below are SYNTHETIC numbers in a live-shaped header) ----------
+
+const LIVE = { kind: 'live', label: 'live-shaped test', source: 'Example provider API', asOf: '2026-10-21T11:58:00Z', attribution: 'Data provided by Example' };
+
+test('S1: live values are tagged as fetched market data with the source; never TEST DATA', () => {
+  const { dataset, assets } = normalizeDataset({ dataset: LIVE, assets: [mover({ id: 'l' })] });
+  assert.equal(dataset.attribution, 'Data provided by Example');
+  const a = assets[0]!;
+  for (const e of [a.price, a.change24hPct, a.change7dPct, a.volume24h, a.marketCap, a.lastUpdated]) {
+    assert.equal(e.kind, 'verified_market_data');
+    assert.equal(e.source, 'Example provider API');
+    assert.equal(e.asOf, '2026-10-21T11:57:00.000Z');
+  }
+});
+
+test('S1: synthetic values stay TEST DATA, never verified market data', () => {
+  const a = normalizeDataset(FIXTURE).assets[0]!;
+  assert.equal(a.price.kind, 'test_data');
+  assert.doesNotMatch(renderScanReport(runScan(normalizeDataset(FIXTURE), NOW)), /VERIFIED DATA|Attribution:|Live data fetched/);
+});
+
+test('S1: a live report shows attribution and verified labels, and never the TEST DATA banner', () => {
+  const r = runScan(normalizeDataset({ dataset: { ...LIVE, notes: ['History unavailable for 1 asset.'] }, assets: [mover({ id: 'l', symbol: 'LIV', name: 'Live-shaped Coin' })] }), NOW);
+  const report = renderScanReport(r);
+  assert.doesNotMatch(report, /TEST DATA|synthetic|No live data was fetched/i);
+  const lines = report.split('\n');
+  assert.equal(lines[1], 'Source: Example provider API');
+  assert.equal(lines[2], 'Attribution: Data provided by Example');
+  assert.equal(lines[3], 'Snapshot: 2026-10-21 07:58 ET. Live data fetched by this tool; values are as reported by the source.');
+  assert.ok(report.includes('Catalyst: NOT VERIFIED | Data: 2026-10-21 07:57 ET (3 min old) [VERIFIED DATA]'), report);
+  assert.ok(report.includes('DATA NOTES\n  History unavailable for 1 asset.'), report);
+  assert.ok(report.includes('VERIFIED DATA = fetched by this tool from the named source; not independently audited.'), report);
 });

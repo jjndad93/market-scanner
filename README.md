@@ -3,9 +3,10 @@
 A local research tool for US stocks, crypto and call options. It explains evidence; it does
 not predict prices, connect to a brokerage, place orders or trade automatically.
 
-**Status: Stage 1 complete; Stage 2 phase P1.** The offline call-option evaluator works. The
-crypto scanner's offline logic and report exist and are tested with synthetic fixtures only;
-live data and the `scan` command are not built yet.
+**Status: Stage 1 complete; Stage 2 P1 complete; P2 steps S1-S5 implemented (not yet run
+against live data).** The offline call-option evaluator works. `scan crypto` runs the crypto
+scanner on a synthetic fixture by default; `scan crypto --live` (CoinGecko Demo API) is built
+and tested only with mocked responses. No live request has been made yet.
 
 ## Requirements
 
@@ -84,10 +85,8 @@ Everything else is optional. If something is missing, the report lists it instea
 
 ## Crypto morning scanner (Stage 2, phase P1: offline logic only)
 
-P1 contains the scanner's logic and report, exercised **only with synthetic test fixtures**.
-It does **not** fetch market data: there is no network code, API key, data provider, cache or
-`scan` command yet (those are later, separately approved phases). `node src/cli.ts scan`
-still reports that the scanner is not built.
+P1 contains the scanner's logic and report, exercised with synthetic test fixtures. The P2
+live-data path is described in the next section.
 
 What P1 does, given a dataset of assets (price, 24h and 7-day change, 24h volume, market cap,
 last-updated time, and prior daily volumes):
@@ -154,6 +153,52 @@ unchanged for now:
   below-threshold entries show only their score, and movers (scored out of 8) and watchlist
   entries (out of 5) use different scales.
 
+## Crypto scan command and live data (Stage 2, P2 steps S1-S5)
+
+```
+node src/cli.ts scan crypto                    # bundled synthetic fixture; never uses the network
+node src/cli.ts scan crypto --fixture <file>   # another synthetic fixture (must declare "synthetic")
+node src/cli.ts scan crypto --now <ISO time>   # fixture only; default is the fixture's snapshot time
+node src/cli.ts scan crypto --json             # structured result instead of the text report
+node src/cli.ts scan crypto --live             # CoinGecko Demo API; explicit opt-in
+```
+
+**Live mode** uses the CoinGecko Demo API: one `/coins/markets` request (top 250 by market cap)
+and then one `/coins/{id}/market_chart` request (91 days, no `interval` parameter, so the
+documented auto-granularity returns daily points at 00:00 UTC; only the latest 30 are used) per
+asset that passes every
+non-history filter, so assets already excluded (stablecoins, too small, stale, ...) cost no
+history request. A run makes at most 160 requests (retries included), spaced about 700 ms
+apart to stay under the Demo plan's 100 calls/min. Live reports carry the attribution
+"Data provided by CoinGecko (https://www.coingecko.com)", a snapshot time, per-asset update
+times, and a DATA NOTES section describing what was fetched or skipped. Live values are tagged
+VERIFIED DATA (meaning fetched by this tool from the named source, not independently audited)
+and never TEST DATA; fixture reports are always TEST DATA.
+
+**Failures never produce invented data.** If the markets request fails (timeout, HTTP error,
+rate limit, malformed response), no report is produced. HTTP 429 is retried once after the
+server's Retry-After (if given and at most 60 s). If a history request fails, that asset gets no
+history and is excluded for insufficient history; if the run is rate-limited or reaches the
+request limit, the remaining assets are listed in the report as not requested.
+
+**API key.** Live mode reads the key only from the `COINGECKO_DEMO_API_KEY` environment
+variable. Store it as a Windows *user* environment variable (System Properties > Environment
+Variables, or `setx COINGECKO_DEMO_API_KEY <key>` in a new terminal), not in a file inside this
+OneDrive-synced folder. The key is sent only in the `x-cg-demo-api-key` header, never in a URL,
+and is never printed or written; errors redact it. Without the variable, `--live` stops before
+making any request.
+
+**Unresolved: what a daily history volume point means.** CoinGecko's documentation describes
+the points only as "24hrs volume", with daily auto-granularity at "00:00 UTC" and "the last
+completed UTC day (00:00) data" available at 00:10 UTC. It does not say whether a point is a
+rolling 24h volume at that moment or a calendar-day total, or which day a 00:00 point belongs
+to. The adapter keeps only points exactly at 00:00 UTC before the current UTC day (oldest
+first, duplicates collapsed; conflicting duplicates, missing days and missing recent days
+counted as unusable) and every live report says the meaning is not yet verified. This must be confirmed
+with a separately approved live check (S7) before live results are relied on.
+
+Not done yet: a history cache (S6) and any live request (S7), both pending approval.
+
 ## Tests
 
 ```
@@ -169,7 +214,8 @@ src/options/              parse -> evaluate -> render for the option command
   blackScholes.ts         pricing, Greeks, implied-volatility solver
   payoff.ts               breakeven, max loss, expiration scenarios
   evaluate.ts             checks, verdict, explanations (thresholds in THRESHOLDS)
-src/scanner/              crypto scanner (P1, offline): types, rules, normalize, analyze, render
+src/scanner/              crypto scanner: types, rules, normalize, analyze, render; command (scan CLI)
+src/providers/            http.ts (fetch client: timeout, budget, 429 retry); coingecko.ts (adapter)
 src/cli.ts                `option` and `scan` commands
 test/                     node:test suites (textbook values and hypothetical inputs)
 examples/                 clearly labelled hypothetical input
@@ -187,6 +233,7 @@ and the morning report and the option command share one data layer and one evide
 ## Safety rules built into this project
 
 - No brokerage connection, no order placement, no automated trading.
-- No paid APIs. API keys (later stages) go in `.env` only, which git ignores.
+- No paid APIs. API keys are read only from environment variables (Windows user environment
+  variables), never from a file in this OneDrive-synced folder; the tool does not read `.env`.
 - Never invents prices, Greeks, volume or IV. Missing inputs are reported as missing.
 - Test and example data is always labelled as hypothetical.

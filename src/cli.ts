@@ -3,12 +3,14 @@ import { parseArgs } from 'node:util';
 import { evaluateCall } from './options/evaluate.ts';
 import { PASTE_TEMPLATE, parseContractText } from './options/parse.ts';
 import { renderEvaluation } from './options/render.ts';
+import { runScanCommand } from './scanner/command.ts';
 
 const HELP = `market-scanner - research tool (no brokerage connection, no orders)
 
 Commands:
   option   Evaluate a call option from pasted contract details (works offline)
-  scan     Morning stock + crypto report (not built yet: Stages 2-5)
+  scan     Crypto morning scan: "scan crypto" (synthetic fixture by default; --live
+           for CoinGecko data). Stock scanning is not built yet.
 
 Option usage:
   node src/cli.ts option --file contract.txt
@@ -94,8 +96,13 @@ async function main(argv: string[]): Promise<number> {
     case 'option':
       return runOption(rest);
     case 'scan':
-      console.log('The morning scanner is not built yet (planned for Stages 2-5, pending review). No data was fetched.');
-      return 2;
+      return runScanCommand(rest, {
+        env: process.env,
+        fetch: (url, init) => globalThis.fetch(url, init),
+        clock: () => new Date(),
+        out: (text) => console.log(text),
+        err: (text) => console.error(text),
+      });
     default:
       console.log(HELP);
       return command === undefined || command === 'help' || command === '--help' ? 0 : 1;

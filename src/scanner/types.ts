@@ -26,15 +26,19 @@ export interface RawAsset {
 }
 
 /**
- * Where a dataset came from. P1 accepts only synthetic fixtures, so fixture data can never
- * be presented as live market data.
+ * Where a dataset came from. 'synthetic' fixtures are always labeled TEST DATA; 'live' data was
+ * fetched by this tool from a named provider and must carry that provider's attribution.
  */
 export interface DatasetMeta {
-  kind: 'synthetic';
+  kind: 'synthetic' | 'live';
   label: string;
   source: string;
   /** ISO timestamp the snapshot represents. */
   asOf: string;
+  /** Required for live data: the provider's attribution text, shown in every live report. */
+  attribution?: string;
+  /** Live only: what happened while collecting the data (partial failures, skipped calls). */
+  notes?: string[];
 }
 
 export interface AssetSnapshot {

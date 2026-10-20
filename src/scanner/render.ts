@@ -1,4 +1,4 @@
-import { has } from '../core/evidence.ts';
+import { KIND_LABEL, has } from '../core/evidence.ts';
 import { formatNy } from '../core/time.ts';
 import { compactUsd } from './analyze.ts';
 import { SCAN_RULES, type ScanRules } from './rules.ts';
@@ -44,8 +44,8 @@ const signedPct = (p: number) => `${p > 0 ? '+' : ''}${p.toFixed(1)}%`;
 function dataLine(c: Candidate, now: Date): string {
   const at = c.asset.lastUpdated.value!;
   const age = Math.max(0, Math.round((now.getTime() - Date.parse(at)) / 60_000));
-  // Synthetic data is labeled TEST DATA; live sources will use their own tag in later stages.
-  const tag = c.asset.price.kind === 'test_data' ? 'TEST DATA' : c.asset.price.source;
+  // Synthetic data is labeled TEST DATA; live data VERIFIED DATA (fetched from the named source).
+  const tag = KIND_LABEL[c.asset.price.kind];
   return `Catalyst: NOT VERIFIED | Data: ${formatNy(new Date(at))} (${age} min old) [${tag}]`;
 }
 
@@ -91,7 +91,12 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
   if (isTest) out.push(`!! TEST DATA - synthetic fixture "${r.dataset.label}". Invented coins and numbers; NOT market data. !!`);
   // Kept on its own unwrapped line so the source label is never split.
   out.push(`Source: ${r.dataset.source}${isTest ? ' [TEST DATA]' : ''}`);
-  out.push(`Snapshot: ${formatNy(new Date(r.dataset.asOf))}. No live data was fetched.`);
+  if (isTest) {
+    out.push(`Snapshot: ${formatNy(new Date(r.dataset.asOf))}. No live data was fetched.`);
+  } else {
+    out.push(`Attribution: ${r.dataset.attribution}`);
+    out.push(`Snapshot: ${formatNy(new Date(r.dataset.asOf))}. Live data fetched by this tool; values are as reported by the source.`);
+  }
   out.push(`Universe: ${r.universe} assets; ${r.passedFilters} passed filters; ${r.excluded.length} excluded.`);
 
   if (r.movers.length === 0 && r.watchlist.length === 0) {
@@ -125,9 +130,11 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
     }
   }
 
-  if (r.symbolCollisions.length > 0) {
+  const notes = r.dataset.notes ?? [];
+  if (r.symbolCollisions.length > 0 || notes.length > 0) {
     out.push('', 'DATA NOTES');
     for (const s of r.symbolCollisions) out.push(`  Symbol ${s.symbol} is shared by ids ${s.ids.join(', ')}; check which asset is meant.`);
+    for (const n of notes) out.push(...wrap(n, '    ', '  '));
   }
 
   out.push(
@@ -136,5 +143,6 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
     'Catalysts are not verified in this stage. Aggregated volume can include inflated exchange reports.',
     'Research aid only; not financial advice.',
   );
+  if (!isTest) out.push('VERIFIED DATA = fetched by this tool from the named source; not independently audited.');
   return out.join('\n');
 }
