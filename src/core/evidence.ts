@@ -19,6 +19,8 @@ export interface Evidence<T> {
   /** ISO timestamp of the underlying data, or null when unknown. */
   readonly asOf: string | null;
   readonly note?: string;
+  /** Set when the raw input could reasonably mean something else (e.g. "3" = 3% or 300%). */
+  readonly ambiguity?: string;
 }
 
 export const KIND_LABEL: Record<EvidenceKind, string> = {

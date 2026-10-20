@@ -18,14 +18,35 @@ export const THRESHOLDS = {
   shortDte: 7,
   cautionDte: 21,
   thetaShareOfValuePerDay: 0.03,
-  breakevenSdPass: 0.75, // breakeven needs <= 0.75 of a 1-standard-deviation move
+  // Breakeven distance in units of a 1-standard-deviation move at HISTORICAL volatility.
+  // (Never the option's own IV: an overpriced option would make its own breakeven look easy.)
+  breakevenSdPass: 0.75,
   breakevenSdFail: 1.5,
   deltaCaution: 0.25,
   deltaFail: 0.1,
-  ivHvExpensive: 1.2,
-  ivHvVeryExpensive: 1.5,
+  // IV / historical volatility. Evidence of expensiveness relative to recent movement, not proof:
+  // IV is legitimately higher before known events such as earnings.
+  ivHvExpensive: 1.2, // caution
+  ivHvVeryExpensive: 1.5, // caution that also blocks RELATIVELY_STRONG
+  ivHvSevere: 2.0, // fail (WEAK)
   ivHvCheap: 0.8,
+  // Historical volatility above this is possible for very volatile stocks, but is treated as a
+  // data-reliability issue: it is shown, never rejected, and never counted as evidence either way.
+  hvPlausibleMax: 1.5,
+  // Historical volatility below this (or exactly 0) is treated the same way. Judgment, not a
+  // market statistic: annualized realized volatility this low is unusual for an individual stock.
+  hvPlausibleMin: 0.05,
+  // If IV is less than half of HV, the two disagree so much that an input error (wrong unit, wrong
+  // field, stale window) should be ruled out before HV is used; HV is then not counted. A judgment
+  // threshold, not a market fact: IV can legitimately sit below realized volatility, e.g. after a
+  // shock inside the HV window. Crossing it only withholds HV as evidence; it never rejects it.
+  // High IV/HV is deliberately NOT treated this way: it is unfavorable price evidence (see ivHv*).
+  ivHvInconsistentLow: 0.5,
   ivCrossCheck: 0.05, // 5 vol points
+  // An entered premium outside [bid - tol, ask + tol] conflicts with the quote,
+  // where tol = max(entryToleranceAbs, entryToleranceRel x mid).
+  entryToleranceAbs: 0.01,
+  entryToleranceRel: 0.01,
 } as const;
 
 export type Verdict = 'RELATIVELY_STRONG' | 'MIXED' | 'WEAK' | 'TOO_RISKY' | 'INSUFFICIENT_DATA';
@@ -40,7 +61,20 @@ export interface Check {
   detail: string;
   /** What a failure of this check means for the verdict. */
   failMeans: 'too_risky' | 'weak';
+  /**
+   * 'contract' checks judge the contract itself. 'data' checks judge the reliability of the
+   * inputs: they lower confidence and cap the verdict at MIXED, but never count as evidence
+   * that the contract is poor.
+   */
+  category: 'contract' | 'data';
+  /** A caution or failure of this check rules out RELATIVELY_STRONG on its own. */
+  blocksStrong?: boolean;
 }
+
+type CheckInput = Omit<Check, 'category'>;
+
+/** Checks about input reliability rather than contract quality. */
+const DATA_CHECKS = new Set(['freshness', 'iv_crosscheck', 'entry']);
 
 export type MetricFormat = 'text' | 'price' | 'money' | 'pct' | 'signedPct' | 'greek' | 'int' | 'days';
 
@@ -66,6 +100,8 @@ export interface Evaluation {
   verdict: Verdict;
   verdictSummary: string;
   verdictReasons: string[];
+  /** Confidence in the inputs, kept separate from the contract verdict. */
+  dataReliability: { level: 'normal' | 'reduced'; reasons: string[] };
   /** Overpriced / underpriced / in line / cannot assess. */
   valuation: string;
   missingRequired: string[];
@@ -99,7 +135,7 @@ const STATUS_RANK: Record<CheckStatus, number> = { unknown: 0, pass: 1, caution:
 const worse = (a: CheckStatus, b: CheckStatus): CheckStatus => (STATUS_RANK[b] > STATUS_RANK[a] ? b : a);
 
 /** Checks whose result must be known before a contract can be rated relatively strong. */
-const MUST_BE_KNOWN = ['spread', 'liquidity', 'freshness', 'valuation', 'earnings'];
+const MUST_BE_KNOWN = ['spread', 'liquidity', 'freshness', 'valuation', 'earnings', 'breakeven'];
 
 function humanAge(minutes: number): string {
   if (minutes < 90) return `${Math.round(minutes)} minutes`;
@@ -134,6 +170,15 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   const blockers: string[] = [];
   const metrics: MetricLine[] = [];
   const checks: Check[] = [];
+  const addCheck = (c: CheckInput) => {
+    checks.push({ ...c, category: DATA_CHECKS.has(c.id) ? 'data' : 'contract' });
+  };
+  // Data-reliability issues, keyed by underlying cause so one problem is counted once even if
+  // it produces several messages. They lower confidence and cap the verdict at MIXED only.
+  const dataIssues = new Map<string, string>();
+  const flagData = (cause: string, message: string) => {
+    if (!dataIssues.has(cause)) dataIssues.set(cause, message);
+  };
   const explanations: string[] = [];
   const metric = (group: string, label: string, evidence: Evidence<number> | Evidence<string>, format: MetricFormat) => {
     metrics.push({ group, label, evidence, format });
@@ -159,8 +204,15 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   const ask = contract.ask.value;
   let mid: number | null = null;
   if (bid !== null && ask !== null) {
-    if (bid > ask) warnings.push(`Bid (${money(bid)}) is above ask (${money(ask)}). The quote looks wrong, so the mid price and spread were not used.`);
-    else if (ask > 0) mid = (bid + ask) / 2;
+    if (bid > ask) {
+      warnings.push(`Bid (${money(bid)}) is above ask (${money(ask)}). The quote looks wrong, so the mid price and spread were not used.`);
+      flagData('quote:inverted', `Quote: the bid (${money(bid)}) is above the ask (${money(ask)}), so the quote is unreliable.`);
+    } else if (ask > 0) {
+      mid = (bid + ask) / 2;
+    } else {
+      // bid <= ask <= 0 means both are $0: there is no valid offer to buy at.
+      flagData('quote:no_offer', `Quote: the bid and ask are both ${money(ask)}, so there is no valid offer and the quote is unreliable.`);
+    }
   }
 
   let cost: Evidence<number>;
@@ -198,6 +250,11 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   const r = rE.value ?? DEFAULT_RISK_FREE_RATE;
   const q = qE.value ?? 0;
 
+  // Inputs whose unit is ambiguous ("0.1" = 10% or 0.1%).
+  for (const [label, ev] of [['Risk-free rate', context.riskFreeRate], ['Dividend yield', context.dividendYield], ['Broker IV', contract.quotedIV]] as const) {
+    if (ev.ambiguity) flagData(`input:${label}`, `${label}: ${ev.ambiguity}`);
+  }
+
   const priceForModel: Evidence<number> =
     mid !== null ? calculated(mid, 'mid price = (bid + ask) / 2', earliestAsOf(contract.bid, contract.ask)) : cost;
 
@@ -209,11 +266,37 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
       model = { S, K, T, r, q, iv: solved.iv, cost: costPerShare };
       ivE = calculated(solved.iv, `Black-Scholes-Merton IV solved from the ${mid !== null ? 'mid price' : 'option price'}`, priceForModel.asOf);
     } else {
-      ivE = missing(`Could not be calculated: ${solved.reason}`);
-      blockers.push(`Implied volatility could not be calculated: ${solved.reason}`);
+      let reason = solved.reason;
+      if (solved.code === 'below_minimum' && S > K) {
+        // Deep in the money, this may reflect the model's assumptions rather than a bad quote.
+        reason += ` For an in-the-money call, another possible cause is a dividend the model does not know about${qE.kind === 'estimate' ? ' (no dividend yield was entered, so 0% was assumed)' : ''}. On a dividend-paying stock, an American-style call can be worth exercising early, so it can trade close to stock minus strike, below the European model's minimum. Black-Scholes cannot represent that. Rounding in the quote can also cause it.`;
+      }
+      ivE = missing(`Could not be calculated: ${reason}`);
+      blockers.push(`Implied volatility could not be calculated: ${reason}`);
     }
   }
   const modelAsOf = earliestAsOf(contract.stockPrice, priceForModel);
+
+  // Historical volatility is the independent reference for two checks, so a questionable value
+  // must not be counted as evidence in either direction: ambiguous unit, zero, implausibly low or
+  // high, or far below the option's own IV. It is shown, never rejected, and reduces reliability.
+  const hvInput = context.historicalVol.value;
+  const hvConcerns: string[] = [];
+  if (context.historicalVol.ambiguity) hvConcerns.push(context.historicalVol.ambiguity);
+  if (hvInput === 0) {
+    hvConcerns.push('0.0% is not a valid historical volatility (a traded stock always moves somewhat).');
+  } else if (hvInput !== null && hvInput < THRESHOLDS.hvPlausibleMin) {
+    hvConcerns.push(`${pct(hvInput)} is below the ${pct(THRESHOLDS.hvPlausibleMin)} plausibility threshold; check the input.`);
+  } else if (hvInput !== null && hvInput > THRESHOLDS.hvPlausibleMax) {
+    hvConcerns.push(`${pct(hvInput)} is above the ${pct(THRESHOLDS.hvPlausibleMax)} plausibility threshold. That is possible for a very volatile stock, but check the input.`);
+  }
+  if (model !== null && hvInput !== null && hvInput > 0 && model.iv / hvInput < THRESHOLDS.ivHvInconsistentLow) {
+    hvConcerns.push(`The option's implied volatility (${pct(model.iv)}) is only ${(model.iv / hvInput).toFixed(2)}x this historical volatility (${pct(hvInput)}), an IV/HV mismatch below the ${THRESHOLDS.ivHvInconsistentLow} consistency threshold. That can happen legitimately, but rule out an input error first.`);
+  }
+  const hvQuestionable = hvConcerns.length > 0;
+  if (hvQuestionable) {
+    flagData('input:historicalVol', `Historical volatility: ${hvConcerns.join(' ')} It is not used as evidence in the breakeven or valuation checks.`);
+  }
 
   // ---- Contract -------------------------------------------------------------------------
   metric('Contract', 'Underlying', contract.underlying, 'text');
@@ -247,7 +330,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     metric('Cost & liquidity', 'Bid-ask spread', calculated(spread, 'ask - bid', quoteTimes), 'price');
     metric('Cost & liquidity', 'Spread as % of mid', calculated(spreadPct, '(ask - bid) / mid', quoteTimes), 'pct');
     const status: CheckStatus = spreadPct <= THRESHOLDS.spreadPass ? 'pass' : spreadPct <= THRESHOLDS.spreadFail ? 'caution' : 'fail';
-    checks.push({
+    addCheck({
       id: 'spread',
       title: 'Bid-ask spread',
       status,
@@ -255,8 +338,12 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
       summary: `spread is ${pct(spreadPct)} of the mid price${status === 'pass' ? ' (tight)' : status === 'caution' ? ' (moderate)' : ' (wide)'}`,
       detail: `The spread is ${money(spread)} (${pct(spreadPct)} of the mid). Buying at the ask and later selling at the bid would cost about ${money(spread * units)} on this position before the stock moves at all.`,
     });
+  } else if (bid !== null && ask !== null) {
+    // Both were entered but cannot form a valid quote: say so, rather than asking for them again.
+    const problem = bid > ask ? `quote is inverted (bid ${money(bid)} above ask ${money(ask)})` : `ask is ${money(ask)}, so there is no valid offer`;
+    addCheck({ id: 'spread', title: 'Bid-ask spread', status: 'unknown', failMeans: 'weak', summary: `invalid quote: ${problem}`, detail: `The bid and ask you entered do not form a valid quote (${problem}), so the cost of getting in and out of this contract cannot be judged. Refresh the quote from your broker.` });
   } else {
-    checks.push({ id: 'spread', title: 'Bid-ask spread', status: 'unknown', failMeans: 'weak', summary: 'bid and ask not both provided', detail: 'Without both the bid and the ask, the cost of getting in and out of this contract cannot be judged.' });
+    addCheck({ id: 'spread', title: 'Bid-ask spread', status: 'unknown', failMeans: 'weak', summary: 'bid and ask not both provided', detail: 'Without both the bid and the ask, the cost of getting in and out of this contract cannot be judged.' });
     missingHelpful.push('Bid and ask (to measure the spread, your real cost of trading)');
   }
 
@@ -265,7 +352,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   const oi = contract.openInterest.value;
   const vol = contract.volume.value;
   if (oi === null && vol === null) {
-    checks.push({ id: 'liquidity', title: 'Open interest & volume', status: 'unknown', failMeans: 'weak', summary: 'not provided', detail: 'Open interest and volume were not provided, so it is unknown how actively this contract trades.' });
+    addCheck({ id: 'liquidity', title: 'Open interest & volume', status: 'unknown', failMeans: 'weak', summary: 'not provided', detail: 'Open interest and volume were not provided, so it is unknown how actively this contract trades.' });
     missingHelpful.push('Open interest and volume (to judge how easily you could exit)');
   } else {
     let status: CheckStatus;
@@ -289,21 +376,38 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     } else if (vol !== null) {
       notes.push(`${vol.toLocaleString('en-US')} contracts traded today.`);
     }
-    checks.push({ id: 'liquidity', title: 'Open interest & volume', status, failMeans: 'weak', summary: oi === null ? 'open interest unknown' : `open interest ${oi.toLocaleString('en-US')}, volume ${vol === null ? 'unknown' : vol.toLocaleString('en-US')}`, detail: notes.join(' ') });
+    addCheck({ id: 'liquidity', title: 'Open interest & volume', status, failMeans: 'weak', summary: oi === null ? 'open interest unknown' : `open interest ${oi.toLocaleString('en-US')}, volume ${vol === null ? 'unknown' : vol.toLocaleString('en-US')}`, detail: notes.join(' ') });
   }
 
   if (quoteAsOf !== null) {
     const ageMinutes = (now.getTime() - Date.parse(quoteAsOf)) / 60_000;
     if (ageMinutes < -5) {
-      checks.push({ id: 'freshness', title: 'Quote freshness', status: 'caution', failMeans: 'weak', summary: 'quote time is in the future', detail: `The quote time (${formatNy(new Date(quoteAsOf))}) is later than the evaluation time. Check the timestamp.` });
+      addCheck({ id: 'freshness', title: 'Quote freshness', status: 'caution', failMeans: 'weak', summary: 'quote time is in the future', detail: `The quote time (${formatNy(new Date(quoteAsOf))}) is later than the evaluation time. Check the timestamp.` });
     } else if (ageMinutes <= THRESHOLDS.quoteFreshMinutes) {
-      checks.push({ id: 'freshness', title: 'Quote freshness', status: 'pass', failMeans: 'weak', summary: `quote is ${humanAge(Math.max(ageMinutes, 0))} old`, detail: `Quote taken ${formatNy(new Date(quoteAsOf))}, ${humanAge(Math.max(ageMinutes, 0))} before this evaluation.` });
+      addCheck({ id: 'freshness', title: 'Quote freshness', status: 'pass', failMeans: 'weak', summary: `quote is ${humanAge(Math.max(ageMinutes, 0))} old`, detail: `Quote taken ${formatNy(new Date(quoteAsOf))}, ${humanAge(Math.max(ageMinutes, 0))} before this evaluation.` });
     } else {
-      checks.push({ id: 'freshness', title: 'Quote freshness', status: 'caution', failMeans: 'weak', summary: `quote is ${humanAge(ageMinutes)} old`, detail: `Quote taken ${formatNy(new Date(quoteAsOf))}, ${humanAge(ageMinutes)} before this evaluation. Prices may have moved; refresh the quote before acting.` });
+      addCheck({ id: 'freshness', title: 'Quote freshness', status: 'caution', failMeans: 'weak', summary: `quote is ${humanAge(ageMinutes)} old`, detail: `Quote taken ${formatNy(new Date(quoteAsOf))}, ${humanAge(ageMinutes)} before this evaluation. Prices may have moved; refresh the quote before acting.` });
     }
   } else {
-    checks.push({ id: 'freshness', title: 'Quote freshness', status: 'unknown', failMeans: 'weak', summary: 'quote time not provided', detail: 'Without a quote time it is unknown whether these prices are current.' });
+    addCheck({ id: 'freshness', title: 'Quote freshness', status: 'unknown', failMeans: 'weak', summary: 'quote time not provided', detail: 'Without a quote time it is unknown whether these prices are current.' });
     missingHelpful.push('Quote time (e.g. "Quote time: 2026-10-20 09:45 ET")');
+  }
+
+  // Entry premium vs. the quote. Breakeven and P/L use the premium you entered, while IV and
+  // Greeks use the market mid, so a conflict between them must be resolved before relying on either.
+  if (has(contract.premium) && mid !== null && bid !== null && ask !== null) {
+    const p = contract.premium.value;
+    const tol = Math.max(THRESHOLDS.entryToleranceAbs, THRESHOLDS.entryToleranceRel * mid);
+    const consequence = 'Breakeven, maximum loss and profit/loss use the premium you entered, while implied volatility and the Greeks use the market mid price. Refresh the quote or correct the premium before relying on this assessment.';
+    if (p > ask + tol) {
+      warnings.push(`The premium you entered (${money(p)}) is above the ask (${money(ask)}).`);
+      addCheck({ id: 'entry', title: 'Entry price vs. quote', status: 'caution', failMeans: 'weak', blocksStrong: true, summary: `entered premium ${money(p)} is above the ask ${money(ask)}`, detail: `The premium you entered (${money(p)}) is ${money(p - ask)} above the ask (${money(ask)}), more than the ${money(tol)} tolerance. Paying above the ask means overpaying for the contract. ${consequence}` });
+    } else if (p < bid - tol) {
+      warnings.push(`The premium you entered (${money(p)}) is below the bid (${money(bid)}).`);
+      addCheck({ id: 'entry', title: 'Entry price vs. quote', status: 'caution', failMeans: 'weak', blocksStrong: true, summary: `entered premium ${money(p)} is below the bid ${money(bid)}`, detail: `The premium you entered (${money(p)}) is ${money(bid - p)} below the bid (${money(bid)}), more than the ${money(tol)} tolerance. A buy order at that price is unlikely to fill unless the market moves. ${consequence}` });
+    } else {
+      addCheck({ id: 'entry', title: 'Entry price vs. quote', status: 'pass', failMeans: 'weak', summary: 'entered premium is consistent with the bid/ask', detail: `The premium you entered (${money(p)}) is within the quoted bid/ask range (${money(bid)} - ${money(ask)}, tolerance ${money(tol)}).` });
+    }
   }
 
   // ---- Breakeven & payoff ---------------------------------------------------------------
@@ -318,7 +422,10 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
       const intrinsic = Math.max(S - K, 0);
       metric('Breakeven & payoff', 'Intrinsic value per share', calculated(intrinsic, 'max(stock - strike, 0)', modelAsOf), 'price');
       metric('Breakeven & payoff', 'Time value per share', calculated(costPerShare - intrinsic, 'premium - intrinsic value', modelAsOf, 'The part of the premium that decays to zero by expiration.'), 'price');
-      if (costPerShare < intrinsic - 0.005) warnings.push(`The premium (${money(costPerShare)}) is below the intrinsic value (${money(intrinsic)}), which should not happen in a normal market. The quote is probably stale or wrong.`);
+      if (costPerShare < intrinsic - 0.005) {
+        warnings.push(`The premium (${money(costPerShare)}) is below the intrinsic value (${money(intrinsic)}), which should not happen in a normal market. The quote is probably stale or wrong.`);
+        flagData('input:premium_below_intrinsic', `Premium: ${money(costPerShare)} is below the intrinsic value of ${money(intrinsic)}, so the price is probably stale or wrong.`);
+      }
     }
   }
 
@@ -341,6 +448,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     // constrains IV (typical deep in the money): rounding alone can shift it a lot.
     if (greeks.vegaPerVolPoint < 0.005) {
       warnings.push('This option is almost entirely intrinsic value, so its price barely depends on volatility. The calculated implied volatility, and the Greeks and probabilities built on it, are poorly determined. Small rounding in the quote can change them substantially.');
+      flagData('model:iv_poorly_determined', 'Implied volatility: poorly determined, because the price barely depends on volatility (almost all intrinsic value). IV-based numbers may shift substantially with small quote changes.');
     }
 
     const sdMove = s * iv * Math.sqrt(t);
@@ -351,7 +459,8 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     metric('Volatility & value', 'Model chance of finishing above breakeven', estimate(pAboveBreakeven, 'risk-neutral lognormal model', 'Implied by the option price; not a forecast. A high value is not, by itself, a reason to buy.', modelAsOf), 'pct');
     metric('Volatility & value', 'Model chance of finishing in the money', estimate(pItm, 'risk-neutral lognormal model', 'Finishing in the money is not the same as making a profit.', modelAsOf), 'pct');
     const hv = context.historicalVol.value;
-    if (hv !== null && hv > 0) metric('Volatility & value', 'IV / historical volatility', calculated(iv / hv, 'calculated IV / historical volatility', modelAsOf), 'greek');
+    // Shown only when HV is usable; a ratio built on questionable HV would look like trustworthy evidence.
+    if (hv !== null && hv > 0 && !hvQuestionable) metric('Volatility & value', 'IV / historical volatility', calculated(iv / hv, 'calculated IV / historical volatility', modelAsOf), 'greek');
 
     metric('Greeks', 'Delta', calculated(greeks.delta, method, modelAsOf, `Option price changes about ${money(greeks.delta)} per share for each $1 move in the stock.`), 'greek');
     metric('Greeks', 'Gamma', calculated(greeks.gamma, method, modelAsOf, 'How much delta changes for each $1 move in the stock.'), 'greek');
@@ -363,16 +472,23 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     if (has(contract.quotedTheta)) metric('Greeks', 'Theta (broker-reported, as pasted)', contract.quotedTheta, 'greek');
     if (has(contract.quotedVega)) metric('Greeks', 'Vega (broker-reported, as pasted)', contract.quotedVega, 'greek');
 
-    // Time remaining & decay.
+    // Time remaining & decay. Short-dated contracts are cautioned and cannot rate strong; whether
+    // one is TOO_RISKY is decided by the breakeven and delta checks, not by in/out of the money alone.
+    let blocksStrong = false;
     {
-      const otm = s < k;
       let status: CheckStatus = 'pass';
       const notes = [`${dte} calendar day(s) to expiration.`];
       if (dte <= THRESHOLDS.shortDte) {
-        status = otm ? 'fail' : 'caution';
-        notes.push(otm
-          ? 'Out of the money with a week or less left: the stock must get above breakeven almost immediately, while time decay is at its fastest.'
-          : 'A week or less left: the remaining time value is decaying very quickly.');
+        status = 'caution';
+        blocksStrong = true;
+        const needed = (breakeven - s) / s;
+        notes.push(
+          `A week or less left: time decay is at its fastest and there is little time to recover from an adverse move.`,
+          needed > 0
+            ? `The stock must rise ${pct(needed)} to reach breakeven (${money(breakeven)}) within ${dte} day(s).`
+            : `The stock is already above breakeven (${money(breakeven)}); the position mainly needs it to stay there.`,
+          `Delta is ${greeks.delta.toFixed(2)}. Delta is a price sensitivity; it is sometimes used as a rough proxy for the chance of finishing in the money, but it is not a real-world probability.`,
+        );
       } else if (dte <= THRESHOLDS.cautionDte) {
         status = 'caution';
         notes.push('Three weeks or less left: time decay accelerates in the final weeks.');
@@ -383,37 +499,52 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
       } else {
         notes.push(`Time decay is about ${pct(thetaShare)} of the option's value per day right now.`);
       }
-      checks.push({ id: 'time', title: 'Time remaining & decay', status, failMeans: 'too_risky', summary: `${dte} days left, decay ~${pct(thetaShare)} of value per day`, detail: notes.join(' ') });
+      addCheck({ id: 'time', title: 'Time remaining & decay', status, failMeans: 'too_risky', blocksStrong, summary: `${dte} days left, decay ~${pct(thetaShare)} of value per day`, detail: notes.join(' ') });
     }
 
-    // Breakeven versus the move the option market itself expects.
+    // Breakeven versus a typical move. Historical volatility is the independent reference. The
+    // option's own IV can only add a conservative warning: measured against itself an overpriced
+    // option looks easy, so a favorable IV-based result is never counted as evidence.
     {
       const needed = breakeven - s;
-      const ratio = needed / sdMove;
-      let status: CheckStatus;
-      let summary: string;
+      const ratioStatus = (ratio: number): CheckStatus =>
+        ratio <= THRESHOLDS.breakevenSdPass ? 'pass' : ratio <= THRESHOLDS.breakevenSdFail ? 'caution' : 'fail';
       if (needed <= 0) {
-        status = 'pass';
-        summary = 'stock is already above breakeven';
+        addCheck({ id: 'breakeven', title: 'Breakeven vs. typical move', status: 'pass', failMeans: 'too_risky', summary: 'stock is already above breakeven', detail: `Breakeven is ${money(breakeven)}, already below the current price of ${money(s)}.` });
       } else {
-        status = ratio <= THRESHOLDS.breakevenSdPass ? 'pass' : ratio <= THRESHOLDS.breakevenSdFail ? 'caution' : 'fail';
-        summary = `breakeven needs ${ratio.toFixed(2)}x the implied 1-SD move`;
+        const impliedRatio = needed / sdMove;
+        const impliedWarning: CheckStatus = ratioStatus(impliedRatio) === 'pass' ? 'unknown' : ratioStatus(impliedRatio);
+        const parts = [`Breakeven is ${money(breakeven)}, ${signedPct(needed / s)} from the current price.`];
+        let hvStatus: CheckStatus = 'unknown';
+        let hvRatio: number | null = null;
+        if (hv !== null && hv > 0 && !hvQuestionable) {
+          const hvMove = s * hv * Math.sqrt(t);
+          hvRatio = needed / hvMove;
+          hvStatus = ratioStatus(hvRatio);
+          parts.push(`At the stock's historical volatility (${pct(hv)}), a typical (1 standard deviation) move by expiration is about +/-${money(hvMove)} (${pct(hvMove / s)}), so reaching breakeven takes ${hvRatio.toFixed(2)}x that move. If returns behaved like the model assumes, an upward move larger than 1.5 standard deviations would happen in only about 7% of outcomes.`);
+        } else {
+          parts.push(hv !== null
+            ? `The independent comparison with historical volatility is unavailable because the historical volatility input (${pct(hv)}) is questionable (see Data reliability).`
+            : 'The independent comparison with historical volatility is unavailable because historical volatility was not provided.');
+        }
+        parts.push(impliedWarning === 'unknown'
+          ? `For comparison only (not counted as evidence): the option's own implied volatility suggests a 1-SD move of +/-${money(sdMove)}, of which breakeven needs ${impliedRatio.toFixed(2)}x.`
+          : `Even measured against the option's own implied volatility (1-SD move +/-${money(sdMove)}), breakeven needs ${impliedRatio.toFixed(2)}x that move. This is counted as a conservative warning only; the option's own IV is never counted as a reason to pass this check.`);
+        const status = worse(hvStatus, impliedWarning);
+        const summary = hvRatio !== null && status === hvStatus
+          ? `breakeven needs ${hvRatio.toFixed(2)}x a 1-SD move at historical volatility`
+          : impliedWarning !== 'unknown'
+            ? `breakeven needs ${impliedRatio.toFixed(2)}x even the option's own implied 1-SD move${hvRatio === null ? ' (no independent reference)' : ''}`
+            : `no independent volatility reference (historical volatility ${hv !== null ? 'questionable' : 'not provided'})`;
+        addCheck({ id: 'breakeven', title: 'Breakeven vs. typical move', status, failMeans: 'too_risky', summary, detail: parts.join(' ') });
       }
-      checks.push({
-        id: 'breakeven',
-        title: 'Breakeven vs. expected move',
-        status,
-        failMeans: 'too_risky',
-        summary,
-        detail: `Breakeven is ${money(breakeven)}, ${signedPct(needed / s)} from the current price. The option's own implied volatility suggests a typical (1 standard deviation) move of about +/-${money(sdMove)} (${pct(sdMove / s)}) by expiration${needed > 0 ? `, so reaching breakeven takes ${ratio.toFixed(2)} of that move` : ''}. Moves larger than 1.5 standard deviations happen in only about 7% of outcomes in the model.`,
-      });
     }
 
     // Delta: how lottery-like the contract is.
     {
       const d = greeks.delta;
       const status: CheckStatus = d < THRESHOLDS.deltaFail ? 'fail' : d < THRESHOLDS.deltaCaution ? 'caution' : 'pass';
-      checks.push({
+      addCheck({
         id: 'delta',
         title: 'Distance out of the money (delta)',
         status,
@@ -421,16 +552,24 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
         summary: `delta ${d.toFixed(2)}`,
         detail: status === 'pass'
           ? `Delta of ${d.toFixed(2)}: the option responds meaningfully to moves in the stock.`
-          : `Delta of ${d.toFixed(2)}: the option is far out of the money and behaves like a lottery ticket. Its low price reflects a low chance of paying off; cheapness is not an advantage.`,
+          : `Delta of ${d.toFixed(2)}: the option is far out of the money and behaves like a lottery ticket. Delta is a price sensitivity, not a real-world probability, but a value this low is consistent with the model expecting it to expire worthless in most outcomes. Its low price reflects that; cheapness is not an advantage.`,
       });
     }
 
     // Implied vs realized volatility: the only overpriced/underpriced gauge available offline.
-    if (hv !== null && hv > 0) {
+    if (hv !== null && hvQuestionable) {
+      valuation = `Cannot assess reliably: the historical volatility input (${pct(hv)}) is questionable (see Data reliability), so it is not counted either way, and no IV/HV ratio is reported.`;
+      addCheck({ id: 'valuation', title: 'Price vs. recent volatility', status: 'unknown', failMeans: 'weak', summary: 'historical volatility input is questionable', detail: valuation });
+    } else if (hv !== null && hv > 0) {
       const ratio = iv / hv;
       let status: CheckStatus;
-      if (ratio >= THRESHOLDS.ivHvVeryExpensive) {
+      let blocks = false;
+      if (ratio >= THRESHOLDS.ivHvSevere) {
+        status = 'fail';
+        valuation = `Appears MUCH MORE EXPENSIVE than recent movement justifies: implied volatility (${pct(iv)}) is ${ratio.toFixed(2)}x the stock's recent realized volatility (${pct(hv)}). This is strong evidence of a high price relative to recent movement, though not proof: a known upcoming event can justify elevated IV. Check the quote and look for a reason before relying on this contract.`;
+      } else if (ratio >= THRESHOLDS.ivHvVeryExpensive) {
         status = 'caution';
+        blocks = true;
         valuation = `Appears EXPENSIVE: implied volatility (${pct(iv)}) is ${ratio.toFixed(2)}x the stock's recent realized volatility (${pct(hv)}).`;
       } else if (ratio >= THRESHOLDS.ivHvExpensive) {
         status = 'caution';
@@ -443,10 +582,10 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
         valuation = `Roughly IN LINE: implied volatility (${pct(iv)}) is ${ratio.toFixed(2)}x recent realized volatility (${pct(hv)}).`;
       }
       valuation += ' This is a rough gauge, not a fair-value calculation; IV is normally higher ahead of known events such as earnings.';
-      checks.push({ id: 'valuation', title: 'Price vs. recent volatility', status, failMeans: 'weak', summary: `IV/HV ${ratio.toFixed(2)}`, detail: valuation });
+      addCheck({ id: 'valuation', title: 'Price vs. recent volatility', status, failMeans: 'weak', blocksStrong: blocks, summary: `IV/HV ${ratio.toFixed(2)}`, detail: valuation });
     } else {
       valuation = 'Cannot assess whether the option is overpriced or underpriced: no historical (realized) volatility was provided to compare against.';
-      checks.push({ id: 'valuation', title: 'Price vs. recent volatility', status: 'unknown', failMeans: 'weak', summary: 'historical volatility not provided', detail: valuation });
+      addCheck({ id: 'valuation', title: 'Price vs. recent volatility', status: 'unknown', failMeans: 'weak', summary: 'historical volatility not provided', detail: valuation });
       missingHelpful.push('Historical volatility of the stock (e.g. "Historical volatility: 30%", the 20- or 30-day realized volatility) to judge whether the option is expensive');
     }
 
@@ -455,7 +594,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     if (quotedIv !== null) {
       const diff = iv - quotedIv;
       const status: CheckStatus = Math.abs(diff) > THRESHOLDS.ivCrossCheck ? 'caution' : 'pass';
-      checks.push({
+      addCheck({
         id: 'iv_crosscheck',
         title: 'Cross-check with broker IV',
         status,
@@ -471,9 +610,13 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   // ---- Catalysts & context --------------------------------------------------------------
   metric('Catalysts & context', 'Next earnings date', context.earningsDate, 'text');
   const earnings = context.earningsDate.value;
-  if (earnings !== null && expiration !== null) {
-    if (earnings >= today && earnings <= expiration) {
-      checks.push({
+  if (earnings !== null && expiration !== null && earnings < today) {
+    // A date that has passed says nothing about the NEXT announcement.
+    addCheck({ id: 'earnings', title: 'Earnings before expiration', status: 'unknown', failMeans: 'weak', summary: `earnings date given (${earnings}) has already passed; next date unknown`, detail: `The earnings date you gave (${earnings}) is in the past, so it cannot show whether the next announcement falls before expiration (${expiration}).` });
+    missingHelpful.push(`Next earnings date: the date you gave (${earnings}) has already passed`);
+  } else if (earnings !== null && expiration !== null) {
+    if (earnings <= expiration) {
+      addCheck({
         id: 'earnings',
         title: 'Earnings before expiration',
         status: 'caution',
@@ -482,10 +625,10 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
         detail: `Earnings are expected on ${earnings}, before expiration. Implied volatility often rises into earnings and drops sharply right after ("IV crush"), which can cut the option's value even if the stock moves your way. The stock can also gap sharply in either direction.`,
       });
     } else {
-      checks.push({ id: 'earnings', title: 'Earnings before expiration', status: 'pass', failMeans: 'weak', summary: `no earnings before expiration (next: ${earnings})`, detail: `The next earnings date you gave (${earnings}) is not between now and expiration.` });
+      addCheck({ id: 'earnings', title: 'Earnings before expiration', status: 'pass', failMeans: 'weak', summary: `no earnings before expiration (next: ${earnings})`, detail: `The next earnings date you gave (${earnings}) is not between now and expiration.` });
     }
   } else {
-    checks.push({ id: 'earnings', title: 'Earnings before expiration', status: 'unknown', failMeans: 'weak', summary: 'earnings date not provided', detail: 'Without the next earnings date it is unknown whether an earnings announcement (and the volatility drop that often follows) falls before expiration.' });
+    addCheck({ id: 'earnings', title: 'Earnings before expiration', status: 'unknown', failMeans: 'weak', summary: 'earnings date not provided', detail: 'Without the next earnings date it is unknown whether an earnings announcement (and the volatility drop that often follows) falls before expiration.' });
     missingHelpful.push('Next earnings date (e.g. "Earnings date: 2026-11-05")');
   }
 
@@ -496,7 +639,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   if (exDiv !== null && expiration !== null && exDiv >= today && exDiv <= expiration) {
     const timeValue = S !== null && K !== null && costPerShare !== null ? costPerShare - Math.max(S - K, 0) : null;
     const earlyExercise = divAmount !== null && timeValue !== null && S !== null && K !== null && S > K && divAmount >= timeValue;
-    checks.push({
+    addCheck({
       id: 'dividend',
       title: 'Dividend before expiration',
       status: 'caution',
@@ -568,10 +711,21 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   let verdict: Verdict;
   let verdictSummary: string;
   const verdictReasons: string[] = [];
-  const fails = checks.filter((c) => c.status === 'fail');
+  // Only contract checks count as evidence about the contract (WEAK / TOO_RISKY). Data checks
+  // lower reliability and cap the verdict at MIXED, but never make a contract look worse.
+  const contractChecks = checks.filter((c) => c.category === 'contract');
+  const fails = contractChecks.filter((c) => c.status === 'fail');
   const riskFails = fails.filter((c) => c.failMeans === 'too_risky');
-  const cautions = checks.filter((c) => c.status === 'caution');
+  const cautions = contractChecks.filter((c) => c.status === 'caution');
   const unknownKey = checks.filter((c) => MUST_BE_KNOWN.includes(c.id) && c.status === 'unknown');
+  for (const c of checks) {
+    if (c.category === 'data' && c.status !== 'pass') flagData(`check:${c.id}`, `${c.title}: ${c.summary}`);
+  }
+  const strongBlocked = checks.filter((c) => c.blocksStrong && (c.status === 'caution' || c.status === 'fail'));
+  const dataReliability: Evaluation['dataReliability'] = {
+    level: dataIssues.size > 0 ? 'reduced' : 'normal',
+    reasons: [...dataIssues.values()],
+  };
 
   if (missingRequired.length > 0 || blockers.length > 0 || model === null) {
     verdict = 'INSUFFICIENT_DATA';
@@ -579,20 +733,35 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     verdictReasons.push(...blockers, ...missingRequired.map((m) => `Missing: ${m}`));
   } else if (riskFails.length > 0) {
     verdict = 'TOO_RISKY';
-    verdictSummary = 'Too risky: on the model\'s own assumptions this contract is likely to lose most or all of its premium. That is not a certainty, but the evidence weighs heavily against it.';
+    verdictSummary = 'Too risky: the evidence (breakeven far beyond a typical move, or a very low delta) indicates a low chance of recovering the premium under the model\'s assumptions. That is not a certainty, but the evidence weighs heavily against it.';
     verdictReasons.push(...fails.map((c) => `${c.title}: ${c.summary}`));
   } else if (fails.length > 0 || cautions.length >= 3) {
     verdict = 'WEAK';
     verdictSummary = 'Weak: several problems with cost, liquidity, timing or pricing outweigh the positives.';
     verdictReasons.push(...fails.map((c) => `${c.title}: ${c.summary}`), ...cautions.map((c) => `${c.title}: ${c.summary}`));
-  } else if (cautions.length <= 1 && unknownKey.length === 0) {
+  } else if (cautions.length <= 1 && unknownKey.length === 0 && dataIssues.size === 0 && strongBlocked.length === 0) {
     verdict = 'RELATIVELY_STRONG';
     verdictSummary = 'Relatively strong on the evidence available: liquidity, pricing and timing checks passed. This is not a prediction that the stock will rise, and you can still lose the entire premium.';
     verdictReasons.push(...checks.filter((c) => c.status === 'pass').map((c) => `${c.title}: ${c.summary}`), ...cautions.map((c) => `Caution - ${c.title}: ${c.summary}`));
   } else {
     verdict = 'MIXED';
-    verdictSummary = 'Mixed: no serious red flags were found, but cautions or missing information prevent a stronger rating.';
-    verdictReasons.push(...cautions.map((c) => `Caution - ${c.title}: ${c.summary}`), ...unknownKey.map((c) => `Unknown - ${c.title}: ${c.summary}`));
+    // Name what actually held the rating back, most severe first, instead of a generic phrase.
+    const severity = (c: Check) => (c.failMeans === 'too_risky' ? 0 : c.blocksStrong ? 1 : 2);
+    const titles = (list: Check[]) => list.map((c) => c.title.toLowerCase()).join(', ');
+    const held: string[] = [];
+    if (cautions.length > 0) held.push(`cautions on ${titles([...cautions].sort((a, b) => severity(a) - severity(b)))}`);
+    const unknownOnly = unknownKey.filter((c) => c.category === 'contract');
+    if (unknownOnly.length > 0) held.push(`missing evidence for ${titles(unknownOnly)}`);
+    if (dataIssues.size > 0) held.push(`reduced data reliability (${dataIssues.size} issue${dataIssues.size === 1 ? '' : 's'})`);
+    verdictSummary = `Mixed: not rated higher because of ${held.join('; ') || 'incomplete evidence'}. No check found a problem severe enough for WEAK or TOO RISKY, which is not a positive signal by itself.`;
+    const seen = new Set<string>();
+    const add = (prefix: string, c: Check) => {
+      if (!seen.has(c.id)) verdictReasons.push(`${prefix} - ${c.title}: ${c.summary}`);
+      seen.add(c.id);
+    };
+    for (const c of cautions) add('Caution', c);
+    for (const c of unknownOnly) add('Unknown', c);
+    for (const message of dataIssues.values()) verdictReasons.push(`Data reliability - ${message}`);
   }
 
   const label = `${contract.underlying.value ?? '(no ticker)'} ${K !== null ? money(K) : '(no strike)'} ${(contract.optionType.value ?? 'call').toUpperCase()}, expires ${expiration ?? '(no date)'}`;
@@ -603,6 +772,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     verdict,
     verdictSummary,
     verdictReasons,
+    dataReliability,
     valuation,
     missingRequired,
     missingHelpful,

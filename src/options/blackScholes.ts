@@ -82,7 +82,8 @@ export function callGreeks(p: BsParams): Greeks {
   };
 }
 
-export type IvResult = { ok: true; iv: number } | { ok: false; reason: string };
+export type IvFailure = 'non_positive_price' | 'no_time' | 'above_stock' | 'below_minimum' | 'above_max_vol';
+export type IvResult = { ok: true; iv: number } | { ok: false; code: IvFailure; reason: string };
 
 const IV_MIN = 0.0001;
 const IV_MAX = 5; // 500%
@@ -92,18 +93,19 @@ const IV_MAX = 5; // 500%
  * which always converges because the call price rises monotonically with volatility.
  */
 export function impliedVolCall(price: number, p: Omit<BsParams, 'sigma'>): IvResult {
-  if (!(price > 0)) return { ok: false, reason: 'the option price must be greater than zero.' };
-  if (!(p.T > 0)) return { ok: false, reason: 'no time remains before expiration.' };
+  if (!(price > 0)) return { ok: false, code: 'non_positive_price', reason: 'the option price must be greater than zero.' };
+  if (!(p.T > 0)) return { ok: false, code: 'no_time', reason: 'no time remains before expiration.' };
   const upper = p.S * Math.exp(-p.q * p.T);
-  if (price >= upper) return { ok: false, reason: 'the option price is at or above the stock price, which no volatility can explain. Check the quote.' };
+  if (price >= upper) return { ok: false, code: 'above_stock', reason: 'the option price is at or above the stock price, which no volatility can explain. Check the quote.' };
   if (bsCall({ ...p, sigma: IV_MIN }) >= price) {
     return {
       ok: false,
+      code: 'below_minimum',
       reason: 'the option price is at or below its minimum (intrinsic) value, so implied volatility is undefined. The quote may be stale or off-market.',
     };
   }
   if (bsCall({ ...p, sigma: IV_MAX }) < price) {
-    return { ok: false, reason: 'the price implies volatility above 500%, beyond what this tool treats as reliable. Check the quote.' };
+    return { ok: false, code: 'above_max_vol', reason: 'the price implies volatility above 500%, beyond what this tool treats as reliable. Check the quote.' };
   }
   let lo = IV_MIN;
   let hi = IV_MAX;

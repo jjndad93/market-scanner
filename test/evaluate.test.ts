@@ -91,7 +91,10 @@ Earnings date: 2027-01-25
 Historical volatility: 30%`);
   assert.equal(ev.verdict, 'TOO_RISKY', ev.verdictReasons.join('; '));
   assert.equal(ev.checks.find((c) => c.id === 'delta')!.status, 'fail');
-  assert.equal(ev.checks.find((c) => c.id === 'time')!.status, 'fail');
+  // Since the M3 fix, "too risky" comes from evidence (breakeven ~10x a typical move at
+  // historical volatility, delta < 0.10), not from being out of the money with <= 7 days left.
+  assert.equal(ev.checks.find((c) => c.id === 'breakeven')!.status, 'fail');
+  assert.equal(ev.checks.find((c) => c.id === 'time')!.status, 'caution');
 });
 
 test('a deep in-the-money call with a high model probability is not rated strong when liquidity is poor', () => {
@@ -170,6 +173,308 @@ test('scenarios: maximum loss equals the cost, and the breakeven row shows zero 
   assert.equal(be.stockPrice, 105);
   assert.ok(Math.abs(be.pnl) < 1e-9);
   assert.ok(ev.expiryScenarios.every((s) => s.pnl >= -500));
+});
+
+// ---- Regression tests for the 2026-10-20 audit findings (H1-H3, M1-M4) --------------------
+// All inputs are hypothetical. `fields` builds a liquid, complete paste; '' removes a field.
+
+function quoteAt(sigma: number, opts: { S?: number; K?: number; expiration?: string; halfSpread?: number } = {}) {
+  const { S = 100, K = 100, expiration = '2026-12-18', halfSpread = 0.05 } = opts;
+  const price = bsCall({ S, K, T: yearsBetween(NOW, expirationCloseUtc(expiration)), r: 0.04, q: 0, sigma });
+  return { Bid: (price - halfSpread).toFixed(2), Ask: (price + halfSpread).toFixed(2) };
+}
+
+function fields(overrides: Record<string, string> = {}): string {
+  const base: Record<string, string> = {
+    Underlying: 'TEST', 'Stock price': '100', Strike: '100', Expiration: '2026-12-18', Type: 'Call',
+    ...quoteAt(0.3), Volume: '800', 'Open interest': '5000', 'Quote time': '2026-10-20 10:15 ET',
+    'Earnings date': '2027-01-25', 'Historical volatility': '30%', 'Risk-free rate': '4%', 'Dividend yield': '0%',
+  };
+  return Object.entries({ ...base, ...overrides }).filter(([, v]) => v !== '').map(([k, v]) => `${k}: ${v}`).join('\n');
+}
+const check = (ev: ReturnType<typeof evaluate>, id: string) => ev.checks.find((c) => c.id === id);
+
+test('H1: breakeven is judged against historical volatility, not the option\'s own IV', () => {
+  // Grossly overpriced: fair value at 30% vol is about $5; this quote implies ~193% IV.
+  const ev = evaluate(fields({ Bid: '30', Ask: '31' }));
+  assert.equal(check(ev, 'breakeven')!.status, 'fail', check(ev, 'breakeven')!.summary);
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG');
+});
+
+test('H1: without historical volatility the breakeven check is unavailable, not passed', () => {
+  const ev = evaluate(fields({ 'Historical volatility': '' }));
+  assert.equal(check(ev, 'breakeven')!.status, 'unknown');
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG');
+});
+
+test('H1: a fairly priced contract still passes the breakeven check using historical volatility', () => {
+  const ev = evaluate(fields());
+  assert.equal(check(ev, 'breakeven')!.status, 'pass');
+  assert.match(check(ev, 'breakeven')!.summary, /historical/);
+});
+
+test('H2: a severe IV premium over historical volatility fails the valuation check', () => {
+  const ev = evaluate(fields({ Bid: '30', Ask: '31' })); // IV/HV ~6.4
+  assert.equal(check(ev, 'valuation')!.status, 'fail');
+  assert.ok(['WEAK', 'TOO_RISKY'].includes(ev.verdict), ev.verdict);
+});
+
+test('H2: IV/HV of about 1.6 blocks RELATIVELY_STRONG even when every other check passes', () => {
+  const ev = evaluate(fields(quoteAt(0.48)));
+  assert.equal(check(ev, 'valuation')!.status, 'caution');
+  assert.equal(ev.verdict, 'MIXED', ev.verdictReasons.join('; '));
+  assert.ok(ev.verdictReasons.some((r) => r.includes('Price vs. recent volatility')));
+});
+
+test('H3: an entry premium far above the ask is flagged and blocks a strong verdict', () => {
+  const ev = evaluate(fields({ Premium: '9.00' }));
+  assert.equal(check(ev, 'entry')!.status, 'caution');
+  assert.ok(ev.warnings.some((w) => /above the ask/.test(w)), ev.warnings.join(' | '));
+  assert.equal(ev.verdict, 'MIXED');
+});
+
+test('H3: an entry premium below the bid is flagged as an unlikely fill', () => {
+  const ev = evaluate(fields({ Premium: '1.00' }));
+  assert.equal(check(ev, 'entry')!.status, 'caution');
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG');
+});
+
+test('H3: an entry premium at the ask, or within the small tolerance, is accepted', () => {
+  const { Ask } = quoteAt(0.3);
+  assert.equal(check(evaluate(fields({ Premium: Ask })), 'entry')!.status, 'pass');
+  assert.equal(evaluate(fields({ Premium: Ask })).verdict, 'RELATIVELY_STRONG');
+  const withinTolerance = (Number(Ask) + 0.03).toFixed(2); // tolerance is max($0.01, 1% of mid ~ $0.05)
+  assert.equal(check(evaluate(fields({ Premium: withinTolerance })), 'entry')!.status, 'pass');
+});
+
+test('M1: a past earnings date is treated as unknown, not as "no earnings before expiration"', () => {
+  const ev = evaluate(fields({ 'Earnings date': '2026-07-28' }));
+  assert.equal(check(ev, 'earnings')!.status, 'unknown');
+  assert.equal(ev.verdict, 'MIXED');
+  assert.ok(ev.missingHelpful.some((m) => /already passed/.test(m)), ev.missingHelpful.join(' | '));
+});
+
+test('M2: a stale quote lowers data reliability and caps the verdict, without counting as a contract weakness', () => {
+  const stale = evaluate(fields({ 'Quote time': '2026-10-19 16:00 ET' }));
+  assert.equal(check(stale, 'freshness')!.status, 'caution');
+  assert.equal(stale.verdict, 'MIXED');
+  assert.equal(stale.dataReliability.level, 'reduced');
+  assert.equal(evaluate(fields()).dataReliability.level, 'normal');
+});
+
+test('M2: stale quote + two contract cautions is MIXED, not WEAK', () => {
+  // IV/HV ~1.25 (caution) + earnings before expiration (caution) + 18-hour-old quote (data issue).
+  const ev = evaluate(fields({ ...quoteAt(0.375), 'Earnings date': '2026-11-05', 'Quote time': '2026-10-19 16:00 ET' }));
+  assert.equal(ev.verdict, 'MIXED', ev.verdictReasons.join('; '));
+});
+
+test('M3: a near-the-money call with 3 days left is cautioned, not automatically TOO_RISKY', () => {
+  const ev = evaluate(fields({ 'Stock price': '99.90', Expiration: '2026-10-23', ...quoteAt(0.3, { S: 99.9, expiration: '2026-10-23', halfSpread: 0.02 }) }));
+  const time = check(ev, 'time')!;
+  assert.equal(time.status, 'caution');
+  assert.match(time.detail, /not a real-world probability/);
+  assert.notEqual(ev.verdict, 'TOO_RISKY');
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG', 'a 3-day option should not be rated strong');
+});
+
+test('M4: a deep in-the-money quote below the model minimum explains the likely dividend/American-exercise cause', () => {
+  const ev = evaluate(fields({ Strike: '60', Bid: '40.05', Ask: '40.25', 'Dividend yield': '' }));
+  assert.equal(ev.verdict, 'INSUFFICIENT_DATA');
+  assert.ok(ev.verdictReasons.some((r) => /dividend/i.test(r)), ev.verdictReasons.join(' | '));
+});
+
+// ---- Regression tests for the adversarial review (R1-R5). All inputs are hypothetical. ------
+
+/** A 1-year call 50% out of the money, quoted at 30% IV, without historical volatility. */
+function farOtmLeaps(extra: Record<string, string> = {}): string {
+  const price = bsCall({ S: 100, K: 150, T: yearsBetween(NOW, expirationCloseUtc('2027-10-15')), r: 0.04, q: 0, sigma: 0.3 });
+  return fields({ Strike: '150', Expiration: '2027-10-15', Bid: (price - 0.02).toFixed(2), Ask: (price + 0.02).toFixed(2), 'Historical volatility': '', ...extra });
+}
+const OVERPRICED = { Bid: '30', Ask: '31' }; // fair value at 30% vol is about $5; implies ~193% IV
+
+test('R1: without historical volatility, an unfavorable IV-based breakeven still warns (1-year call 50% OTM)', () => {
+  const ev = evaluate(farOtmLeaps());
+  const be = check(ev, 'breakeven')!;
+  assert.equal(be.status, 'fail', be.summary);
+  assert.match(be.detail, /independent comparison .*unavailable/i);
+  assert.equal(ev.verdict, 'TOO_RISKY');
+});
+
+test('R1: the option\'s own IV never passes the breakeven check on its own', () => {
+  // Fair at-the-money call: the IV-based ratio is favorable, but that is not independent evidence.
+  assert.equal(check(evaluate(fields({ 'Historical volatility': '' })), 'breakeven')!.status, 'unknown');
+});
+
+test('R1/R4: a MIXED verdict with an unfavorable breakeven does not claim "no serious red flags"', () => {
+  // 59-day call 15% OTM at 30% IV, no historical volatility: IV-based breakeven is a caution.
+  const price = bsCall({ S: 100, K: 115, T: yearsBetween(NOW, expirationCloseUtc('2026-12-18')), r: 0.04, q: 0, sigma: 0.3 });
+  const ev = evaluate(fields({ Strike: '115', Bid: (price - 0.02).toFixed(2), Ask: (price + 0.02).toFixed(2), 'Historical volatility': '' }));
+  assert.equal(check(ev, 'breakeven')!.status, 'caution');
+  assert.equal(ev.verdict, 'MIXED');
+  assert.doesNotMatch(ev.verdictSummary, /no serious red flags/i);
+  assert.match(ev.verdictSummary, /breakeven/i);
+});
+
+test('R2: "Historical volatility: 3" (ambiguous: 3% or 300%) cannot make an overpriced contract look strong', () => {
+  const ev = evaluate(fields({ ...OVERPRICED, 'Historical volatility': '3' }));
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG');
+  assert.notEqual(check(ev, 'breakeven')!.status, 'pass');
+  assert.notEqual(check(ev, 'valuation')!.status, 'pass');
+  assert.equal(ev.dataReliability.level, 'reduced');
+  // One underlying issue (the HV input) is reported once, even though it is both ambiguous and implausible.
+  assert.equal(ev.dataReliability.reasons.filter((r) => /historical volatility/i.test(r)).length, 1, ev.dataReliability.reasons.join(' | '));
+});
+
+test('R2: a 190% historical volatility is kept but cannot support a strong verdict for an overpriced contract', () => {
+  const ev = evaluate(fields({ ...OVERPRICED, 'Historical volatility': '190%' }));
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG');
+  assert.notEqual(check(ev, 'breakeven')!.status, 'pass');
+  assert.notEqual(check(ev, 'valuation')!.status, 'pass');
+  assert.equal(ev.dataReliability.level, 'reduced');
+  const hv = ev.metrics.find((m) => m.label === 'Historical volatility')!;
+  assert.equal(hv.evidence.value, 1.9, 'high volatility is flagged, not rejected');
+});
+
+test('R2: questionable historical volatility is a data issue, not evidence that the contract is poor', () => {
+  // Fairly priced for a genuinely volatile stock (IV 160%, HV 160%): capped at MIXED, never WEAK/TOO_RISKY because of HV.
+  const ev = evaluate(fields({ ...quoteAt(1.6), 'Historical volatility': '160%' }));
+  assert.equal(ev.verdict, 'MIXED', ev.verdictReasons.join('; '));
+  assert.equal(ev.dataReliability.level, 'reduced');
+});
+
+test('R2: unambiguous historical volatility inputs do not raise data issues', () => {
+  for (const hv of ['30%', '30', '0.3']) {
+    const ev = evaluate(fields({ 'Historical volatility': hv }));
+    assert.equal(ev.dataReliability.level, 'normal', `${hv}: ${ev.dataReliability.reasons.join(' | ')}`);
+    assert.equal(ev.verdict, 'RELATIVELY_STRONG', hv);
+  }
+});
+
+test('R3: input problems lower data reliability consistently', () => {
+  const cases: Record<string, string> = {
+    'bid above ask': fields({ Bid: '5.20', Ask: '5.00', Premium: '5.10' }),
+    'premium below intrinsic': fields({ Strike: '90', Bid: '', Ask: '', Premium: '9.50' }),
+    'ambiguous percentage': fields({ 'Dividend yield': '0.1' }),
+  };
+  for (const [name, text] of Object.entries(cases)) {
+    const ev = evaluate(text);
+    assert.equal(ev.dataReliability.level, 'reduced', name);
+    assert.notEqual(ev.verdict, 'RELATIVELY_STRONG', name);
+  }
+  // Poorly determined IV (deep in the money; the quote barely constrains IV).
+  const T = yearsBetween(NOW, expirationCloseUtc('2026-12-18'));
+  const price = bsCall({ S: 100, K: 75, T, r: 0.04, q: 0, sigma: 0.2 });
+  const deep = evaluate(fields({ Strike: '75', Bid: (price - 0.05).toFixed(2), Ask: (price + 0.05).toFixed(2) }));
+  assert.equal(deep.dataReliability.level, 'reduced');
+  assert.ok(deep.dataReliability.reasons.some((r) => /poorly determined/i.test(r)), deep.dataReliability.reasons.join(' | '));
+});
+
+test('R4: the MIXED summary names the actual caution instead of a generic phrase', () => {
+  const ev = evaluate(fields(quoteAt(0.48))); // IV/HV ~1.6
+  assert.equal(ev.verdict, 'MIXED');
+  assert.doesNotMatch(ev.verdictSummary, /no serious red flags/i);
+  assert.match(ev.verdictSummary, /price vs\. recent volatility/i);
+});
+
+test('R5: the deep in-the-money IV message does not make unsupported frequency claims', () => {
+  const ev = evaluate(fields({ Strike: '60', Bid: '40.05', Ask: '40.25', 'Dividend yield': '' }));
+  const reason = ev.verdictReasons.join(' ');
+  assert.match(reason, /another possible cause/i);
+  assert.doesNotMatch(reason, /more common|usually/i);
+});
+
+// ---- Follow-up: HV consistency, low/zero HV, inverted quotes (all inputs hypothetical) -------
+
+const hvCheckStatuses = (ev: ReturnType<typeof evaluate>) => [check(ev, 'breakeven')!.status, check(ev, 'valuation')!.status];
+
+test('HV-1: IV 30% with HV 150% (IV/HV 0.2) does not count HV and cannot rate strong', () => {
+  const ev = evaluate(fields({ 'Historical volatility': '150%' })); // 150% is not above the 150% ceiling
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG');
+  assert.deepEqual(hvCheckStatuses(ev), ['unknown', 'unknown']);
+  assert.equal(ev.dataReliability.level, 'reduced');
+  assert.ok(ev.dataReliability.reasons.some((r) => /IV\/HV|mismatch/i.test(r)), ev.dataReliability.reasons.join(' | '));
+});
+
+test('HV-1 boundary: IV/HV just below 0.5 makes HV questionable; just above 0.5 it still counts', () => {
+  const below = evaluate(fields({ 'Historical volatility': '62%' })); // IV ~30% -> IV/HV ~0.48
+  assert.deepEqual(hvCheckStatuses(below), ['unknown', 'unknown']);
+  assert.equal(below.dataReliability.level, 'reduced');
+  const above = evaluate(fields({ 'Historical volatility': '58%' })); // IV/HV ~0.52
+  assert.equal(above.dataReliability.level, 'normal', above.dataReliability.reasons.join(' | '));
+  assert.equal(check(above, 'valuation')!.status, 'pass');
+});
+
+test('HV-1: a high IV/HV ratio remains evidence about price, not a data issue', () => {
+  const ev = evaluate(fields({ ...OVERPRICED })); // IV ~193%, HV 30%
+  assert.equal(check(ev, 'valuation')!.status, 'fail');
+  assert.equal(ev.dataReliability.level, 'normal');
+});
+
+test('HV-2: an implausibly low HV (2%) is not counted for or against the contract', () => {
+  const ev = evaluate(fields({ 'Historical volatility': '2%' }));
+  assert.notEqual(ev.verdict, 'TOO_RISKY');
+  assert.notEqual(ev.verdict, 'RELATIVELY_STRONG');
+  assert.deepEqual(hvCheckStatuses(ev), ['unknown', 'unknown']);
+  assert.equal(ev.dataReliability.level, 'reduced');
+});
+
+test('HV-2 boundary: HV below 5% is questionable, 5% is accepted', () => {
+  const lowVolQuote = quoteAt(0.06); // a genuinely low-volatility option, IV ~6%
+  const below = evaluate(fields({ ...lowVolQuote, 'Historical volatility': '4.9%' }));
+  assert.deepEqual(hvCheckStatuses(below), ['unknown', 'unknown']);
+  assert.equal(below.dataReliability.level, 'reduced');
+  const at = evaluate(fields({ ...lowVolQuote, 'Historical volatility': '5%' }));
+  assert.notEqual(check(at, 'valuation')!.status, 'unknown');
+  assert.equal(at.dataReliability.level, 'normal', at.dataReliability.reasons.join(' | '));
+});
+
+test('HV-4: an explicit 0% HV is invalid, not treated as omitted', () => {
+  const ev = evaluate(fields({ 'Historical volatility': '0%' }));
+  assert.equal(ev.dataReliability.level, 'reduced');
+  assert.ok(ev.dataReliability.reasons.some((r) => /0\.0%/.test(r)), ev.dataReliability.reasons.join(' | '));
+  for (const id of ['breakeven', 'valuation']) assert.doesNotMatch(check(ev, id)!.summary, /not provided/, id);
+  assert.ok(!ev.missingHelpful.some((m) => /^Historical volatility/.test(m)), 'should not ask for HV as if it were missing');
+});
+
+test('HV-4: the IV/HV ratio is shown only when HV is usable', () => {
+  const ratioShown = (hv: string) => evaluate(fields({ 'Historical volatility': hv })).metrics.some((m) => m.label === 'IV / historical volatility');
+  assert.equal(ratioShown('30%'), true);
+  for (const hv of ['3', '150%', '190%', '2%', '0%']) assert.equal(ratioShown(hv), false, hv);
+});
+
+test('Q-3: an inverted quote is reported as invalid, not as a missing bid/ask', () => {
+  const ev = evaluate(fields({ Bid: '5.20', Ask: '5.00', Premium: '5.10' }));
+  const spread = check(ev, 'spread')!;
+  assert.match(spread.summary, /inverted/i);
+  assert.doesNotMatch(spread.summary + spread.detail, /not both provided|without both/i);
+  assert.ok(!ev.missingHelpful.some((m) => /^Bid and ask/.test(m)), ev.missingHelpful.join(' | '));
+  assert.equal(ev.dataReliability.level, 'reduced');
+});
+
+test('Q-4: a $0/$0 quote with a premium keeps the invalid-offer message and lowers reliability once', () => {
+  const ev = evaluate(fields({ Bid: '0', Ask: '0', Premium: '5.10' }));
+  const spread = check(ev, 'spread')!;
+  assert.equal(spread.status, 'unknown');
+  assert.match(spread.summary, /ask is \$0\.00, so there is no valid offer/);
+  assert.ok(!ev.missingHelpful.some((m) => /^Bid and ask/.test(m)), ev.missingHelpful.join(' | '));
+  assert.equal(ev.dataReliability.level, 'reduced');
+  assert.equal(ev.dataReliability.reasons.filter((r) => /quote/i.test(r)).length, 1, ev.dataReliability.reasons.join(' | '));
+  assert.equal(ev.verdict, 'MIXED');
+});
+
+test('Q-4: related quote cases are not misclassified', () => {
+  // A zero bid with a positive ask is a valid (if wide) quote, typical of cheap out-of-the-money
+  // calls: not a data issue. The ask is set so the mid matches the 30% IV used elsewhere.
+  const otmPrice = bsCall({ S: 100, K: 115, T: yearsBetween(NOW, expirationCloseUtc('2026-12-18')), r: 0.04, q: 0, sigma: 0.3 });
+  const zeroBid = evaluate(fields({ Strike: '115', Bid: '0', Ask: (2 * otmPrice).toFixed(2) }));
+  assert.notEqual(check(zeroBid, 'spread')!.status, 'unknown');
+  assert.equal(zeroBid.dataReliability.level, 'normal', zeroBid.dataReliability.reasons.join(' | '));
+  // A genuinely missing bid is missing evidence, not invalid data.
+  const noBid = evaluate(fields({ Bid: '' }));
+  assert.match(check(noBid, 'spread')!.summary, /not both provided/);
+  assert.equal(noBid.dataReliability.level, 'normal', noBid.dataReliability.reasons.join(' | '));
+  // A normal quote stays clean.
+  assert.equal(evaluate(fields()).dataReliability.level, 'normal');
 });
 
 test('the what-if table shows a loss when the stock is flat (time decay)', () => {

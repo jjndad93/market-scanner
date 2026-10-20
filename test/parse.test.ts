@@ -82,6 +82,23 @@ test('percentages with and without a % sign', () => {
   assert.equal(parsePercent('n/a', 3), null);
 });
 
+test('percentages are marked ambiguous only where both readings are plausible', () => {
+  // Volatility fields: 1-3 without a % sign could be either (e.g. "3" = 3% or 300%).
+  assert.ok(parsePercent('3', 3, 1)!.ambiguity);
+  assert.ok(parsePercent('1.5', 3, 1)!.ambiguity);
+  assert.equal(parsePercent('33', 3, 1)!.ambiguity, undefined);
+  assert.equal(parsePercent('0.3', 3, 1)!.ambiguity, undefined);
+  assert.equal(parsePercent('3%', 3, 1)!.ambiguity, undefined);
+  // Rates and yields: any non-zero value up to 0.2 without a % sign (e.g. "0.1" = 10% or 0.1%).
+  assert.ok(parsePercent('0.1', 0.2, 0)!.ambiguity);
+  assert.equal(parsePercent('0', 0.2, 0)!.ambiguity, undefined);
+  assert.equal(parsePercent('4', 0.2, 0)!.ambiguity, undefined);
+  // The parsed evidence carries the flag through to the evaluator.
+  const r = parseContractText('Historical volatility: 3\nIV: 31.5%');
+  assert.ok(r.context.historicalVol.ambiguity);
+  assert.equal(r.contract.quotedIV.ambiguity, undefined);
+});
+
 test('dates and quote times', () => {
   assert.equal(parseDateLoose('2026-12-18'), '2026-12-18');
   assert.equal(parseDateLoose('12/18/26'), '2026-12-18');

@@ -90,6 +90,12 @@ export function renderEvaluation(ev: Evaluation, ctx: RenderContext): string {
     for (const r of ev.verdictReasons) out.push(...wrap(r, '      ', '    - '));
   }
   out.push('', ...wrap(`Price check: ${ev.valuation}`, '  ', '  '));
+  if (ev.dataReliability.level === 'reduced') {
+    out.push('', '  Data reliability: REDUCED - treat this assessment with less confidence until resolved:');
+    for (const r of ev.dataReliability.reasons) out.push(...wrap(r, '      ', '    - '));
+  } else {
+    out.push('', ...wrap('Data reliability: no issues found in the checks run (the inputs are still unverified).', '  ', '  '));
+  }
 
   if (ev.missingRequired.length > 0 || ev.missingHelpful.length > 0) {
     section('MISSING INFORMATION');
@@ -126,7 +132,7 @@ export function renderEvaluation(ev: Evaluation, ctx: RenderContext): string {
 
   section('CHECKS');
   for (const c of ev.checks) {
-    out.push(`  ${STATUS_TAG[c.status]} ${c.title}`);
+    out.push(`  ${STATUS_TAG[c.status]} ${c.title}${c.category === 'data' ? ' (data reliability)' : ''}`);
     out.push(...wrap(c.detail, '              ', '              '));
   }
 

@@ -49,16 +49,33 @@ Everything else is optional. If something is missing, the report lists it instea
 ### What it reports
 
 - **Verdict**: `RELATIVELY STRONG`, `MIXED`, `WEAK`, `TOO RISKY` or `INSUFFICIENT DATA`,
-  with the reasons. "Relatively strong" requires known, good liquidity, a fresh quote, a
-  price that is not expensive compared with the stock's recent volatility, and a known
-  earnings date. The rating never improves because a premium is low or because a
-  calculated probability is high.
+  with the reasons. "Relatively strong" requires known, good liquidity, a fresh quote, an
+  entry premium consistent with the bid/ask, a known upcoming earnings date, more than a
+  week to expiration, and a historical volatility to compare against (both for valuation
+  and for judging the breakeven distance). The rating never improves because a premium is
+  low or because a calculated probability is high.
+- **Data reliability**, reported separately from the verdict. Problems with the inputs
+  (stale quote, premium outside the bid/ask, broker IV disagreeing with the calculation)
+  lower confidence and cap the verdict at MIXED, but never count as evidence that the
+  contract itself is poor.
+- **Historical volatility (HV) input checks.** HV is the independent reference for the
+  breakeven and valuation checks, so the evaluator treats it as *questionable* when it is:
+  explicitly 0%; below 5%; above 150%; ambiguous in units (e.g. `3` with no `%` sign, which
+  could mean 3% or 300%); or inconsistent with the option's own implied volatility (IV/HV
+  below 0.5). These are provisional heuristic thresholds chosen for this evaluator, not
+  empirically calibrated trading rules, and genuinely unusual stocks can trip them. A
+  questionable HV is still shown, but it is not counted for or against the contract: the
+  breakeven and valuation checks treat it as unavailable, the IV/HV comparison is not
+  reported, data reliability is reduced, and the verdict cannot be `RELATIVELY STRONG`.
+  These checks catch some input errors, not all of them: a wrong HV that falls inside the
+  accepted range is still used, and no rating means a contract is safe.
 - **Key numbers**, each tagged by provenance: `YOU PROVIDED`, `CALCULATED`, `THIRD-PARTY`
   (for example broker-reported IV or delta), `ESTIMATE` (model outputs and default
   assumptions), `MISSING`. `VERIFIED DATA` is reserved for values fetched from a market-data
   source in later stages.
-- **Checks**: spread, open interest and volume, quote freshness, time decay, breakeven compared with
-  the implied move, delta, IV compared with historical volatility, earnings and dividends before expiration.
+- **Checks**: spread, open interest and volume, quote freshness, entry premium vs. bid/ask, time
+  decay, breakeven compared with a typical move at historical volatility, delta, IV compared with
+  historical volatility, earnings and dividends before expiration.
 - **Profit/loss at expiration** (exact payoff math) and a **before-expiration what-if table**
   (model estimate across stock moves and IV changes). This shows how a call can lose value
   while the stock rises.

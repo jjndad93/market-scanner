@@ -92,14 +92,28 @@ export function parseNumber(text: string): number | null {
 /**
  * Reads a percentage. "31.5%" is always 0.315. Without a % sign, values above `decimalMax`
  * are read as percentages ("31.5" -> 0.315) and smaller ones as decimals ("0.315").
+ *
+ * A value without a % sign whose magnitude lies in [ambiguousMin, decimalMax] (and is not 0)
+ * is flagged as ambiguous, because both readings are plausible: for volatility, "3" could be
+ * 3% or 300%; for a rate, "0.1" could be 10% or 0.1%.
  */
-export function parsePercent(text: string, decimalMax: number): { value: number; note?: string } | null {
+export function parsePercent(
+  text: string,
+  decimalMax: number,
+  ambiguousMin = Number.POSITIVE_INFINITY,
+): { value: number; note?: string; ambiguity?: string } | null {
   const hasSign = text.includes('%');
   const n = parseNumber(text.replace('%', ''));
   if (n === null) return null;
   if (hasSign) return { value: n / 100 };
   if (Math.abs(n) > decimalMax) return { value: n / 100, note: `"${text.trim()}" had no % sign; read as ${n}%.` };
-  return { value: n, note: `"${text.trim()}" had no % sign; read as a decimal (${(n * 100).toFixed(2)}%).` };
+  const asDecimal = `${(n * 100).toFixed(2)}%`;
+  const ambiguous = n !== 0 && Math.abs(n) >= ambiguousMin;
+  return {
+    value: n,
+    note: `"${text.trim()}" had no % sign; read as a decimal (${asDecimal}).`,
+    ambiguity: ambiguous ? `"${text.trim()}" has no % sign and could mean ${n}% or ${asDecimal}; it was read as ${asDecimal}.` : undefined,
+  };
 }
 
 interface SymbolLine {
@@ -139,6 +153,10 @@ export function parseSymbolLine(line: string): SymbolLine | null {
 }
 
 const SOURCE = 'pasted by you';
+/** Volatility without a % sign in [1, 3] is ambiguous ("3" = 3% or 300%). */
+const VOL_AMBIGUOUS_MIN = 1;
+/** A rate or yield without a % sign in (0, 0.2] is ambiguous ("0.1" = 10% or 0.1%). */
+const RATE_AMBIGUOUS_MIN = 0;
 
 export function parseContractText(text: string): ParseResult {
   const raw = new Map<Key, string>();
@@ -214,14 +232,15 @@ export function parseContractText(text: string): ParseResult {
     return make(key, n, opts.quoted ? quoteAsOf : null, opts.party ?? 'user');
   };
 
-  const percent = (key: Key, decimalMax: number, opts: { quoted?: boolean; party?: 'user' | 'third' } = {}): Evidence<number> => {
+  const percent = (key: Key, decimalMax: number, ambiguousMin: number, opts: { quoted?: boolean; party?: 'user' | 'third' } = {}): Evidence<number> => {
     const s = raw.get(key);
     if (s === undefined) return absent(key);
-    const p = parsePercent(s, decimalMax);
+    const p = parsePercent(s, decimalMax, ambiguousMin);
     if (p === null) return unreadable(key, s);
     if (p.value < 0) return unreadable(key, s, ' (cannot be negative)');
     if (p.note) warnings.push(`${LABELS[key]}: ${p.note}`);
-    return make(key, p.value, opts.quoted ? quoteAsOf : null, opts.party ?? 'user', p.note);
+    const ev = make(key, p.value, opts.quoted ? quoteAsOf : null, opts.party ?? 'user', p.note);
+    return p.ambiguity ? { ...ev, ambiguity: p.ambiguity } : ev;
   };
 
   const date = (key: Key): Evidence<string> => {
@@ -280,7 +299,7 @@ export function parseContractText(text: string): ParseResult {
     quantity,
     multiplier,
     quoteTime: quoteAsOf !== null ? make('quoteTime', quoteAsOf, quoteAsOf, 'user') : missing('Quote time not provided, so it is unknown how fresh the prices are.'),
-    quotedIV: percent('quotedIV', 3, { quoted: true, party: 'third' }),
+    quotedIV: percent('quotedIV', 3, VOL_AMBIGUOUS_MIN, { quoted: true, party: 'third' }),
     quotedDelta: num('quotedDelta', { quoted: true, party: 'third' }),
     quotedGamma: num('quotedGamma', { quoted: true, party: 'third' }),
     quotedTheta: num('quotedTheta', { quoted: true, party: 'third' }),
@@ -289,12 +308,12 @@ export function parseContractText(text: string): ParseResult {
 
   const trendRaw = raw.get('trend');
   const context: MarketContext = {
-    riskFreeRate: percent('riskFreeRate', 0.2),
-    dividendYield: percent('dividendYield', 0.2),
+    riskFreeRate: percent('riskFreeRate', 0.2, RATE_AMBIGUOUS_MIN),
+    dividendYield: percent('dividendYield', 0.2, RATE_AMBIGUOUS_MIN),
     dividendAmount: num('dividendAmount', { min: 0 }),
     exDividendDate: date('exDividendDate'),
     earningsDate: date('earningsDate'),
-    historicalVol: percent('historicalVol', 3),
+    historicalVol: percent('historicalVol', 3, VOL_AMBIGUOUS_MIN),
     trend: trendRaw !== undefined ? make('trend', trendRaw, null, 'user') : absent('trend'),
   };
 
