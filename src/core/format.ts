@@ -20,3 +20,13 @@ export function signedPct(fraction: number, digits = 1): string {
   const text = (fraction * 100).toFixed(digits);
   return Number(text) > 0 ? `+${text}%` : `${Number(text) === 0 ? (0).toFixed(digits) : text}%`;
 }
+
+/**
+ * Makes untrusted (e.g. provider-supplied) text safe to print to a terminal: control characters
+ * (U+0000-U+001F, U+007F-U+009F) are replaced by visible \\uXXXX escapes, so they cannot clear
+ * the screen, move the cursor or start a forged line. Use only at output boundaries; keep the
+ * original value for matching and requests.
+ */
+export function terminalSafe(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}

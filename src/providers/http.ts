@@ -36,12 +36,15 @@ export class HttpError extends Error {
   readonly kind: HttpErrorKind;
   readonly status: number | null;
   readonly path: string;
-  constructor(kind: HttpErrorKind, path: string, message: string, status: number | null = null) {
+  /** True when at least one attempt for this request was actually sent. */
+  readonly requestSent: boolean;
+  constructor(kind: HttpErrorKind, path: string, message: string, status: number | null = null, requestSent = true) {
     super(message);
     this.name = 'HttpError';
     this.kind = kind;
     this.status = status;
     this.path = path;
+    this.requestSent = requestSent;
   }
 }
 
@@ -73,11 +76,11 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
 
   // Defense in depth: no message from this module may contain the key.
   const redact = (text: string) => text.split(apiKey).join('[REDACTED]');
-  const fail = (kind: HttpErrorKind, path: string, message: string, status: number | null = null) =>
-    new HttpError(kind, path, redact(message), status);
+  const fail = (kind: HttpErrorKind, path: string, message: string, status: number | null = null, requestSent = true) =>
+    new HttpError(kind, path, redact(message), status, requestSent);
 
   async function attempt(path: string, url: string) {
-    if (callsMade >= maxCalls) throw fail('budget', path, `Call budget of ${maxCalls} requests reached; ${path} was not requested.`);
+    if (callsMade >= maxCalls) throw fail('budget', path, `Call budget of ${maxCalls} requests reached; ${path} was not requested.`, null, false);
     callsMade++;
     const signal = AbortSignal.timeout(timeoutMs);
     try {
@@ -104,6 +107,10 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
           throw fail('rate_limited', path, `Rate limited on ${path} (HTTP 429); Retry-After ${wait === null ? 'missing or invalid' : `${Math.round(wait / 1000)} s exceeds the ${Math.round(maxRetryWaitMs / 1000)} s limit`}. Not retried.`, 429);
         }
         await sleep(wait);
+        if (callsMade >= maxCalls) {
+          // The first attempt WAS sent (and got 429); only the retry is refused, and it is not sent.
+          throw fail('budget', path, `Rate limited on ${path} (HTTP 429); the retry was not sent because the call budget of ${maxCalls} requests was reached.`, 429, true);
+        }
         res = await attempt(path, url);
         if (res.status === 429) throw fail('rate_limited', path, `Rate limited on ${path} again after one retry (HTTP 429).`, 429);
       }

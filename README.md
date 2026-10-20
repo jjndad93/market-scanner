@@ -161,7 +161,17 @@ node src/cli.ts scan crypto --fixture <file>   # another synthetic fixture (must
 node src/cli.ts scan crypto --now <ISO time>   # fixture only; default is the fixture's snapshot time
 node src/cli.ts scan crypto --json             # structured result instead of the text report
 node src/cli.ts scan crypto --live             # CoinGecko Demo API; explicit opt-in
+node src/cli.ts scan crypto --live --max-requests 4 --history-diagnostics
+                                               # live only: cap this run at 4 requests (1-160,
+                                               # retries included) and print each fetched history's
+                                               # point count and first 2 / last 3 timestamps (UTC,
+                                               # classified) to stderr; never volume values
 ```
+
+History timestamps are classified as `prior-midnight` (00:00 UTC on an earlier day; the only
+points used), `prior-intraday`, `today-midnight`, `today-after-midnight`, `future` (at or after
+00:00 UTC tomorrow), or `invalid`, and repeated timestamps are flagged as duplicates. Provider
+ids are printed with control characters escaped (as `\uXXXX`).
 
 **Live mode** uses the CoinGecko Demo API: one `/coins/markets` request (top 250 by market cap)
 and then one `/coins/{id}/market_chart` request (91 days, no `interval` parameter, so the

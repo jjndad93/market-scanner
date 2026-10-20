@@ -1,4 +1,5 @@
 import { KIND_LABEL, has } from '../core/evidence.ts';
+import { terminalSafe } from '../core/format.ts';
 import { formatNy } from '../core/time.ts';
 import { compactUsd } from './analyze.ts';
 import { SCAN_RULES, type ScanRules } from './rules.ts';
@@ -49,9 +50,12 @@ function dataLine(c: Candidate, now: Date): string {
   return `Catalyst: NOT VERIFIED | Data: ${formatNy(new Date(at))} (${age} min old) [${tag}]`;
 }
 
-/** Symbol, plus the id when the symbol is shared by several assets (ambiguous). */
+/**
+ * Symbol, plus the id when the symbol is shared by several assets (ambiguous). Ids, symbols and
+ * names come from the data provider, so they are escaped here, at the output boundary only.
+ */
 const assetLabel = (c: Candidate, ambiguous: ReadonlySet<string>) =>
-  ambiguous.has(c.asset.symbol) ? `${c.asset.symbol}, id ${c.asset.id}` : c.asset.symbol;
+  ambiguous.has(c.asset.symbol) ? `${terminalSafe(c.asset.symbol)}, id ${terminalSafe(c.asset.id)}` : terminalSafe(c.asset.symbol);
 
 function why(c: Candidate): string {
   return c.breakdown.map((p) => `${p.rule} ${p.points}/${p.max} (${p.detail})`).join('; ');
@@ -62,7 +66,7 @@ function renderMover(c: Candidate, i: number, now: Date, ambiguous: ReadonlySet<
   const week = has(a.change7dPct) ? `${signedPct(a.change7dPct.value)} 7d` : '7d n/a';
   const turnover = has(c.metrics.turnover) ? `; turnover ${(c.metrics.turnover.value * 100).toFixed(1)}% of ${compactUsd(a.marketCap.value!)} market cap` : '';
   return [
-    `${String(i + 1).padStart(2)}. ${a.name} (${assetLabel(c, ambiguous)})  ${price(a.price.value!)}  ${signedPct(a.change24hPct.value!)} 24h / ${week}   Evidence ${c.score}/${c.maxScore}`,
+    `${String(i + 1).padStart(2)}. ${terminalSafe(a.name)} (${assetLabel(c, ambiguous)})  ${price(a.price.value!)}  ${signedPct(a.change24hPct.value!)} 24h / ${week}   Evidence ${c.score}/${c.maxScore}`,
     `    Volume ${compactUsd(a.volume24h.value!)} = ${c.metrics.relativeVolume.value!.toFixed(2)}x the ${a.dailyVolumes.length}-day median${turnover}`,
     ...wrap(`Why: ${why(c)}`, '      ', '    '),
     ...wrap(`Risks: ${c.risks.join(' ')}`, '      ', '    '),
@@ -73,7 +77,7 @@ function renderMover(c: Candidate, i: number, now: Date, ambiguous: ReadonlySet<
 function renderWatch(c: Candidate, i: number, now: Date, ambiguous: ReadonlySet<string>): string[] {
   const a = c.asset;
   return [
-    `${String(i + 1).padStart(2)}. ${a.name} (${assetLabel(c, ambiguous)})  ${price(a.price.value!)}  ${signedPct(a.change24hPct.value!)} 24h   Evidence ${c.score}/${c.maxScore}`,
+    `${String(i + 1).padStart(2)}. ${terminalSafe(a.name)} (${assetLabel(c, ambiguous)})  ${price(a.price.value!)}  ${signedPct(a.change24hPct.value!)} 24h   Evidence ${c.score}/${c.maxScore}`,
     `    Volume ${compactUsd(a.volume24h.value!)} = ${c.metrics.relativeVolume.value!.toFixed(2)}x median, no large move yet. A research lead, not a prediction.`,
     `    ${dataLine(c, now)}`,
   ];
@@ -121,7 +125,7 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
     const groups = new Map<ExclusionCode, string[]>();
     for (const e of r.excluded) {
       const code = e.reasons[0]!.code;
-      const label = ambiguous.has(e.symbol) || code.startsWith('duplicate') ? `${e.symbol} [id ${e.id}]` : e.symbol;
+      const label = ambiguous.has(e.symbol) || code.startsWith('duplicate') ? `${terminalSafe(e.symbol)} [id ${terminalSafe(e.id)}]` : terminalSafe(e.symbol);
       groups.set(code, [...(groups.get(code) ?? []), label]);
     }
     for (const [code, symbols] of groups) {
@@ -133,7 +137,7 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
   const notes = r.dataset.notes ?? [];
   if (r.symbolCollisions.length > 0 || notes.length > 0) {
     out.push('', 'DATA NOTES');
-    for (const s of r.symbolCollisions) out.push(`  Symbol ${s.symbol} is shared by ids ${s.ids.join(', ')}; check which asset is meant.`);
+    for (const s of r.symbolCollisions) out.push(`  Symbol ${terminalSafe(s.symbol)} is shared by ids ${s.ids.map(terminalSafe).join(', ')}; check which asset is meant.`);
     for (const n of notes) out.push(...wrap(n, '    ', '  '));
   }
 

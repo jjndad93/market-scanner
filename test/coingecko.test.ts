@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DAY_MS } from '../src/core/time.ts';
-import { COINGECKO_ATTRIBUTION, ProviderResponseError, fetchLiveDataset, parseDailyVolumes, parseMarkets } from '../src/providers/coingecko.ts';
+import { COINGECKO_ATTRIBUTION, ProviderResponseError, classifyPoint, describeHistory, fetchLiveDataset, parseDailyVolumes, parseMarkets } from '../src/providers/coingecko.ts';
 import { type FetchLike, createHttpClient } from '../src/providers/http.ts';
 import { runScan } from '../src/scanner/analyze.ts';
 import { normalizeDataset } from '../src/scanner/normalize.ts';
@@ -89,7 +89,9 @@ test('parseDailyVolumes keeps completed UTC days only, oldest first, and reports
     ],
   }, NOW);
   assert.deepEqual(volumes, [1, null, null, null, 10, 20, 30]);
-  assert.deepEqual(stats, { points: 13, malformed: 3, notAtMidnight: 1, currentDay: 2, duplicates: 1, conflicts: 1, gaps: 2, missingRecent: 0 });
+  // S7a: the old `currentDay: 2` is split into today-at-00:00 (TODAY) and later today (NOW);
+  // the old `notAtMidnight` is renamed `priorIntraday`; accepted 00:00 points are counted too.
+  assert.deepEqual(stats, { points: 13, invalid: 3, priorMidnight: 7, priorIntraday: 1, todayMidnight: 1, todayAfterMidnight: 1, future: 0, duplicates: 1, conflicts: 1, gaps: 2, missingRecent: 0 });
 });
 
 test('parseDailyVolumes counts missing recent days up to yesterday, so a stale history cannot look current', () => {
@@ -168,7 +170,9 @@ test('a rate limit on history stops further history requests and is reported', a
   const markets = ['a', 'b', 'c'].map((x) => coin({ id: `syn-${x}`, symbol: `s${x}` }));
   const { data, urls } = await live(markets, (id) => (id === 'syn-a' ? { status: 200, body: chart(20e6) } : { status: 429 }));
   assert.equal(historyCalls(urls).length, 2); // syn-a ok, syn-b 429 without Retry-After, syn-c never requested
-  assert.ok(data.dataset.notes.some((n) => /History not requested for 2 asset\(s\) \(syn-b, syn-c\) because the provider rate-limited the run/.test(n)), data.dataset.notes.join(' | '));
+  // Remediation F1: syn-b WAS requested (it got a 429), so it is reported as failed, not "not requested".
+  assert.ok(data.dataset.notes.some((n) => n.includes('History request failed for 1 asset(s) (syn-b)')), data.dataset.notes.join(' | '));
+  assert.ok(data.dataset.notes.some((n) => n.includes('History not requested for 1 asset(s) (syn-c) because the provider rate-limited the run')), data.dataset.notes.join(' | '));
 });
 
 test('the per-run request cap is enforced and reported', async () => {
@@ -197,4 +201,127 @@ test('live output is deterministic, attributed, flags the unverified volume mean
   assert.ok(!JSON.stringify(one.data).includes(KEY) && !report.includes(KEY));
   // Each synthetic chart ends with an intraday "now" point, which must be dropped and reported.
   assert.ok(one.data.dataset.notes.some((n) => n.includes('2 from the current (incomplete) UTC day')), one.data.dataset.notes.join(' | '));
+});
+
+// ---- S7a: timestamp classification and history diagnostics (SYNTHETIC inputs) ----------------
+
+test('S7a: every history point gets exactly one documented classification', () => {
+  assert.deepEqual(classifyPoint([TODAY - DAY_MS, 1], TODAY), { ts: TODAY - DAY_MS, cls: 'prior-midnight' });
+  assert.deepEqual(classifyPoint([TODAY - 3_600_000, 1], TODAY), { ts: TODAY - 3_600_000, cls: 'prior-intraday' });
+  assert.deepEqual(classifyPoint([TODAY, 1], TODAY), { ts: TODAY, cls: 'today-midnight' });
+  assert.deepEqual(classifyPoint([TODAY + 1, 1], TODAY), { ts: TODAY + 1, cls: 'today-after-midnight' });
+  for (const bad of [['x', 1], [Number.NaN, 1], [9e15, 1], [5], 'p', null]) {
+    assert.deepEqual(classifyPoint(bad, TODAY), { ts: null, cls: 'invalid' }, JSON.stringify(bad));
+  }
+});
+
+test('S7a: the parser counts today 00:00 and later-today points separately; neither is used', () => {
+  const { volumes, stats } = parseDailyVolumes({ total_volumes: [[TODAY - DAY_MS, 7], [TODAY, 8], [NOW.getTime(), 9]] }, NOW);
+  assert.deepEqual(volumes, [7]);
+  assert.deepEqual([stats.priorMidnight, stats.todayMidnight, stats.todayAfterMidnight], [1, 1, 1]);
+});
+
+test('S7a: describeHistory shows the first 2 and last 3 timestamps in raw order, with classes and duplicates, never values', () => {
+  const pts = [[TODAY - 3 * DAY_MS, 111], [TODAY - 2 * DAY_MS, 222], [TODAY - 2 * DAY_MS, 333], ['bad', 444], [TODAY - DAY_MS + 5, 555], [TODAY, 666], [NOW.getTime(), 777]];
+  const d = describeHistory({ total_volumes: pts }, NOW)!;
+  assert.equal(d.points, 7);
+  assert.equal(d.omitted, 2);
+  assert.deepEqual(d.shown, [
+    { index: 0, time: '2026-10-18T00:00:00.000Z', cls: 'prior-midnight', duplicate: false },
+    { index: 1, time: '2026-10-19T00:00:00.000Z', cls: 'prior-midnight', duplicate: false },
+    { index: 4, time: '2026-10-20T00:00:00.005Z', cls: 'prior-intraday', duplicate: false },
+    { index: 5, time: '2026-10-21T00:00:00.000Z', cls: 'today-midnight', duplicate: false },
+    { index: 6, time: '2026-10-21T12:00:00.000Z', cls: 'today-after-midnight', duplicate: false },
+  ]);
+  for (const v of ['111', '222', '555', '666', '777']) assert.ok(!JSON.stringify(d).includes(v), `volume ${v} leaked`);
+  // Short series are shown in full; duplicates are flagged; a malformed body describes nothing.
+  const small = describeHistory({ total_volumes: [[TODAY - DAY_MS, 1], [TODAY - DAY_MS, 2], 'x'] }, NOW)!;
+  assert.deepEqual(small.shown.map((p) => [p.cls, p.duplicate]), [['prior-midnight', false], ['prior-midnight', true], ['invalid', false]]);
+  assert.equal(small.omitted, 0);
+  assert.equal(describeHistory({ prices: [] }, NOW), null);
+});
+
+test('S7a: fetchLiveDataset collects diagnostics only when asked, for every history request made', async () => {
+  const markets = [coin({ id: 'syn-a' }), coin({ id: 'syn-b', symbol: 'sb' })];
+  const routes = (url: string): Route => (url.includes('/coins/markets') ? { status: 200, body: markets } : url.includes('syn-a') ? { status: 200, body: chart(20e6) } : { status: 500 });
+  const mk = () => createHttpClient({ fetch: router(routes).fn, baseUrl: 'https://api.example.test/api/v3', apiKeyHeader: 'x-cg-demo-api-key', apiKey: KEY, maxCalls: 10, sleep: async () => {} });
+  const withDiag = await fetchLiveDataset({ client: mk(), clock: () => NOW, sleep: async () => {}, diagnostics: true });
+  assert.deepEqual(withDiag.diagnostics!.map((x) => [x.id, x.outcome]), [['syn-a', 'parsed'], ['syn-b', 'request failed (HTTP 500)']]);
+  assert.equal(withDiag.diagnostics![0]!.history!.points, 92);
+  assert.equal((await fetchLiveDataset({ client: mk(), clock: () => NOW, sleep: async () => {} })).diagnostics, undefined);
+});
+
+// ---- S7a remediation (all inputs SYNTHETIC; mocked fetch only) --------------------------------
+
+/** A client over a scripted mock fetch: `answer(url, attemptForThisUrl)` returns a reply, 'hang' or 'throw'. */
+function scripted(answer: (url: string, n: number) => Route | 'hang' | 'throw', maxCalls: number, timeoutMs = 15_000) {
+  const urls: string[] = [];
+  const fn: FetchLike = (url, init) => {
+    urls.push(url);
+    const a = answer(url, urls.filter((u) => u === url).length);
+    if (a === 'throw') return Promise.reject(new TypeError(`fetch failed ${url} ${KEY}`));
+    if (a === 'hang') return new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+    return Promise.resolve({ ok: a.status < 300, status: a.status, headers: { get: (n: string) => a.headers?.[n.toLowerCase()] ?? null }, text: async () => (a.body === undefined ? '' : typeof a.body === 'string' ? a.body : JSON.stringify(a.body)) });
+  };
+  const client = createHttpClient({ fetch: fn, baseUrl: 'https://api.example.test/api/v3', apiKeyHeader: 'x-cg-demo-api-key', apiKey: KEY, maxCalls, timeoutMs, sleep: async () => {} });
+  return { client, urls };
+}
+const idOf = (url: string) => decodeURIComponent(/\/coins\/([^/?]+)\/market_chart/.exec(url)?.[1] ?? 'markets');
+
+test('F1: a history request whose 429 retry is blocked by the budget is reported as attempted and failed', async () => {
+  const markets = ['a', 'b', 'c'].map((x) => coin({ id: `syn-${x}`, symbol: `s${x}` }));
+  const { client, urls } = scripted((url, n) => (url.includes('/coins/markets') ? { status: 200, body: markets }
+    : url.includes('syn-b') && n === 1 ? { status: 429, headers: { 'retry-after': '0' } } : { status: 200, body: chart(20e6) }), 3);
+  const data = await fetchLiveDataset({ client, clock: () => NOW, sleep: async () => {}, maxCalls: 3, diagnostics: true });
+  assert.deepEqual(urls.map(idOf), ['markets', 'syn-a', 'syn-b']); // 3 requests: the cap is never exceeded
+  assert.deepEqual(data.diagnostics!.map((d) => [d.id, d.outcome]), [
+    ['syn-a', 'parsed'],
+    ['syn-b', 'request failed (HTTP 429; retry not sent: per-run request limit reached)'],
+  ]);
+  assert.ok(data.dataset.notes.some((n) => n.includes('History request failed for 1 asset(s) (syn-b)')), data.dataset.notes.join(' | '));
+  assert.ok(data.dataset.notes.some((n) => n.includes('History not requested for 1 asset(s) (syn-c) because the per-run limit of 3 requests was reached')), data.dataset.notes.join(' | '));
+});
+
+test('F3: failure outcomes distinguish HTTP status, invalid JSON, timeout and network errors', async () => {
+  const markets = ['json', 'time', 'net', 'http'].map((x) => coin({ id: `syn-${x}`, symbol: `s${x}` }));
+  const { client } = scripted((url) => (url.includes('/coins/markets') ? { status: 200, body: markets }
+    : url.includes('syn-json') ? { status: 200, body: '<html>not json</html>' }
+      : url.includes('syn-time') ? 'hang' : url.includes('syn-net') ? 'throw' : { status: 503 }), 10, 20);
+  const data = await fetchLiveDataset({ client, clock: () => NOW, sleep: async () => {}, diagnostics: true });
+  assert.deepEqual(data.diagnostics!.map((d) => [d.id, d.outcome]), [
+    ['syn-json', 'request failed (response was not valid JSON)'],
+    ['syn-time', 'request failed (timed out)'],
+    ['syn-net', 'request failed (network error)'],
+    ['syn-http', 'request failed (HTTP 503)'],
+  ]);
+  assert.ok(!JSON.stringify(data).includes(KEY));
+});
+
+test('F2: provider ids with control characters are escaped in report notes; internal ids are unchanged', async () => {
+  const evil = 'evil\u001b[2J\nFAKE: line\r\u0000\u007f\u009b';
+  const markets = [coin({ id: evil, symbol: 'ev' })];
+  const { client, urls } = scripted((url) => (url.includes('/coins/markets') ? { status: 200, body: markets } : { status: 500 }), 5);
+  const data = await fetchLiveDataset({ client, clock: () => NOW, sleep: async () => {} });
+  assert.equal(idOf(urls[1]!), evil, 'the request still uses the real id');
+  assert.equal((data.assets[0] as { id: string }).id, evil, 'data matching still uses the real id');
+  const note = data.dataset.notes.find((n) => n.startsWith('History request failed'))!;
+  assert.ok(note.includes('evil\\u001b[2J\\u000aFAKE: line\\u000d\\u0000\\u007f\\u009b'), note);
+  const report = renderScanReport(runScan(normalizeDataset(data), NOW));
+  const notesBlock = report.slice(report.indexOf('DATA NOTES'));
+  assert.doesNotMatch(notesBlock, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/, 'no raw control characters in the notes');
+  assert.ok(!notesBlock.split('\n').some((l) => l.startsWith('FAKE')), 'no forged line');
+});
+
+test('F4: timestamps at or after tomorrow 00:00 UTC are "future" and never enter the history', () => {
+  const TOMORROW = TODAY + DAY_MS;
+  assert.equal(classifyPoint([TOMORROW - 1, 1], TODAY).cls, 'today-after-midnight');
+  assert.equal(classifyPoint([TOMORROW, 1], TODAY).cls, 'future');
+  assert.equal(classifyPoint([TODAY + 5 * DAY_MS, 1], TODAY).cls, 'future');
+  assert.equal(classifyPoint([8.64e15, 1], TODAY).cls, 'future');
+  assert.equal(classifyPoint([8.64e15 + 1, 1], TODAY).cls, 'invalid');
+  const { volumes, stats } = parseDailyVolumes({ total_volumes: [[TODAY - DAY_MS, 7], [TOMORROW, 8], [TODAY + 5 * DAY_MS, 9], [8.64e15, 10]] }, NOW);
+  assert.deepEqual(volumes, [7]);
+  assert.deepEqual([stats.priorMidnight, stats.future, stats.todayAfterMidnight], [1, 3, 0]);
+  const d = describeHistory({ total_volumes: [[TOMORROW, 1]] }, NOW)!;
+  assert.deepEqual(d.shown.map((p) => p.cls), ['future']);
 });
