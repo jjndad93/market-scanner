@@ -23,6 +23,38 @@ export interface RawAsset {
   dailyVolumes?: number[] | null;
   /** Optional classification hints, e.g. "stablecoin", "wrapped", "staked". */
   tags?: string[];
+  /** Live only: set when this run did not obtain the asset's history (see HistoryStatus). */
+  historyStatus?: HistoryStatus;
+}
+
+/**
+ * Why a live asset has no history: 'not_requested' (the run stopped requesting history: request
+ * limit or rate limit) or 'request_failed' (the request was sent but failed, or its response had
+ * no usable volume data). Absent when history was obtained, and always absent for fixtures.
+ */
+export type HistoryStatus = 'not_requested' | 'request_failed';
+
+/**
+ * Live only: how much of the history-eligible universe this run actually obtained history for.
+ * Every eligible asset is counted in exactly one of fetched, requestFailed and notRequested.
+ */
+export interface HistoryCoverage {
+  /** Distinct assets that passed every non-history filter when the data was fetched. */
+  historyEligible: number;
+  /** History obtained and parsed (it may still fail the history-sufficiency rules). */
+  historyFetched: number;
+  /** Request sent but failed, or the response had no usable volume data. */
+  historyRequestFailed: number;
+  /** Never requested because the run stopped (request limit or rate limit). */
+  historyNotRequested: number;
+  /** True only when no request failed and nothing was left unrequested. */
+  complete: boolean;
+  /** Why history requests stopped; null whenever historyNotRequested is 0. */
+  stopReason: string | null;
+  /** Requests made in this run (markets + history, retries included). */
+  requestsUsed: number;
+  /** The run's request limit. */
+  requestLimit: number;
 }
 
 /**
@@ -39,6 +71,8 @@ export interface DatasetMeta {
   attribution?: string;
   /** Live only: what happened while collecting the data (partial failures, skipped calls). */
   notes?: string[];
+  /** Live only: history coverage of this run; absent for fixtures. */
+  coverage?: HistoryCoverage;
 }
 
 export interface AssetSnapshot {
@@ -56,6 +90,8 @@ export interface AssetSnapshot {
   dailyVolumes: number[];
   /** What happened to the supplied history, so nothing is dropped silently. */
   history: VolumeHistoryStats;
+  /** Live only: present when this run did not obtain the asset's history. */
+  historyStatus?: HistoryStatus;
 }
 
 export interface VolumeHistoryStats {
@@ -82,6 +118,8 @@ export type ExclusionCode =
   | 'below_volume'
   | 'insufficient_history'
   | 'unreliable_history' // too many zero/invalid days, or a near-zero baseline
+  | 'history_not_requested' // live: history never requested (request or rate limit); not evaluated
+  | 'history_request_failed' // live: history request failed or returned no usable data; not evaluated
   | 'stale_data';
 
 export interface ExclusionReason {

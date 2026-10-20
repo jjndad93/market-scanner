@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { type Evidence, missing, testData, verified } from '../core/evidence.ts';
 import { normalizeTag, SCAN_RULES, type ScanRules } from './rules.ts';
-import type { AssetSnapshot, DatasetMeta, Exclusion, RawAsset } from './types.ts';
+import type { AssetSnapshot, DatasetMeta, Exclusion, HistoryCoverage, HistoryStatus, RawAsset } from './types.ts';
 
 export interface NormalizedDataset {
   dataset: DatasetMeta;
@@ -52,10 +52,13 @@ export function normalizeDataset(input: unknown, rules: ScanRules = SCAN_RULES):
   }
   if (!Array.isArray(input.assets)) throw new Error('Dataset must contain an "assets" array.');
 
+  // History coverage and per-asset history statuses describe a live run; a fixture cannot claim them.
+  if (d.kind !== 'live' && d.coverage !== undefined) throw new Error('Only a live dataset may include history "coverage".');
   const dataset: DatasetMeta = { kind: d.kind, label: d.label, source: d.source, asOf: new Date(d.asOf).toISOString() };
   if (d.kind === 'live') {
     dataset.attribution = d.attribution as string;
     if (Array.isArray(d.notes)) dataset.notes = [...(d.notes as string[])];
+    if (d.coverage !== undefined) dataset.coverage = validateCoverage(d.coverage);
   }
   const assets: AssetSnapshot[] = [];
   const invalid: Exclusion[] = [];
@@ -71,10 +74,60 @@ export function normalizeDataset(input: unknown, rules: ScanRules = SCAN_RULES):
       });
       return;
     }
+    if (raw.historyStatus !== undefined) {
+      if (d.kind !== 'live') throw new Error(`Asset "${raw.id}": only a live dataset may set "historyStatus".`);
+      if (raw.historyStatus !== 'not_requested' && raw.historyStatus !== 'request_failed') {
+        throw new Error(`Asset "${raw.id}": unknown historyStatus ${JSON.stringify(raw.historyStatus)}; expected "not_requested" or "request_failed".`);
+      }
+      if (Array.isArray(raw.dailyVolumes) && raw.dailyVolumes.length > 0) {
+        throw new Error(`Asset "${raw.id}": has history data but historyStatus says its history was not obtained.`);
+      }
+    }
     assets.push(normalizeAsset(raw as unknown as RawAsset, dataset, rules.historyWindowDays));
   });
 
+  // The coverage counts must match the assets that carry each status (distinct ids).
+  if (dataset.coverage !== undefined) {
+    const idsWith = (s: HistoryStatus) => new Set(assets.filter((a) => a.historyStatus === s).map((a) => a.id)).size;
+    const c = dataset.coverage;
+    if (idsWith('not_requested') !== c.historyNotRequested || idsWith('request_failed') !== c.historyRequestFailed) {
+      throw new Error('History "coverage" counts do not match the assets marked not requested or request failed.');
+    }
+  }
+
   return { dataset, assets, invalid, historyWindowDays: rules.historyWindowDays };
+}
+
+const COVERAGE_COUNTS = ['historyEligible', 'historyFetched', 'historyRequestFailed', 'historyNotRequested', 'requestsUsed', 'requestLimit'] as const;
+
+/** Checks that live history coverage is internally consistent; throws a dataset error otherwise. */
+function validateCoverage(v: unknown): HistoryCoverage {
+  const bad = (why: string): never => {
+    throw new Error(`Invalid history "coverage": ${why}.`);
+  };
+  if (!isRecord(v)) return bad('must be an object');
+  for (const k of COVERAGE_COUNTS) {
+    if (!Number.isSafeInteger(v[k]) || (v[k] as number) < 0) bad(`${k} must be a whole number >= 0`);
+  }
+  const n = v as Record<(typeof COVERAGE_COUNTS)[number], number>;
+  if (n.requestLimit < 1) bad('requestLimit must be at least 1');
+  if (n.historyEligible !== n.historyFetched + n.historyRequestFailed + n.historyNotRequested) {
+    bad('historyEligible must equal historyFetched + historyRequestFailed + historyNotRequested');
+  }
+  if (typeof v.complete !== 'boolean' || v.complete !== (n.historyRequestFailed + n.historyNotRequested === 0)) {
+    bad('complete must be true exactly when no history request failed and none was left unrequested');
+  }
+  if (n.historyNotRequested > 0 ? !isText(v.stopReason) : v.stopReason !== null) {
+    bad('stopReason must be text when assets were not requested, and null otherwise');
+  }
+  if (n.requestsUsed > n.requestLimit) bad('requestsUsed exceeds requestLimit');
+  // The markets request plus at least one request per history request that was sent.
+  if (n.requestsUsed < 1 + n.historyFetched + n.historyRequestFailed) bad('requestsUsed is lower than the requests the counts imply');
+  return {
+    historyEligible: n.historyEligible, historyFetched: n.historyFetched, historyRequestFailed: n.historyRequestFailed,
+    historyNotRequested: n.historyNotRequested, complete: v.complete as boolean, stopReason: v.stopReason as string | null,
+    requestsUsed: n.requestsUsed, requestLimit: n.requestLimit,
+  };
 }
 
 function normalizeAsset(raw: RawAsset, dataset: DatasetMeta, historyWindowDays: number): AssetSnapshot {
@@ -118,5 +171,7 @@ function normalizeAsset(raw: RawAsset, dataset: DatasetMeta, historyWindowDays: 
     lastUpdated: lastUpdatedIso !== null ? tag(lastUpdatedIso, lastUpdatedIso) : missing(isText(raw.lastUpdated) ? `last-updated time "${raw.lastUpdated}" is invalid` : 'last-updated time not provided'),
     dailyVolumes,
     history: { supplied: supplied.length, windowDays: window.length, zeroDays, invalidEntries },
+    // Added only when set (already validated), so fixture output gains no new key.
+    ...(raw.historyStatus !== undefined ? { historyStatus: raw.historyStatus } : {}),
   };
 }

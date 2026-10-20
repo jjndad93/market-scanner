@@ -540,4 +540,99 @@ test('S1: a live report shows attribution and verified labels, and never the TES
   assert.ok(report.includes('Catalyst: NOT VERIFIED | Data: 2026-10-21 07:57 ET (3 min old) [VERIFIED DATA]'), report);
   assert.ok(report.includes('DATA NOTES\n  History unavailable for 1 asset.'), report);
   assert.ok(report.includes('VERIFIED DATA = fetched by this tool from the named source; not independently audited.'), report);
+  assert.doesNotMatch(report, /History coverage|PARTIAL/); // no coverage supplied, so none is claimed
+});
+
+// ---- Partial history coverage (live only; SYNTHETIC numbers in a live-shaped header) -----------
+
+/** Partial coverage for 3 eligible assets: 1 fetched, 1 failed, 1 not requested. */
+const COVERAGE = {
+  historyEligible: 3, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 1, complete: false,
+  stopReason: 'the per-run limit of 3 requests was reached', requestsUsed: 3, requestLimit: 3,
+};
+const failedAsset = (id: string) => asset({ id, dailyVolumes: null, historyStatus: 'request_failed' });
+const unrequested = (id: string) => asset({ id, dailyVolumes: null, historyStatus: 'not_requested' });
+const liveScan = (assets: RawAsset[], coverage?: unknown) =>
+  runScan(normalizeDataset({ dataset: coverage === undefined ? LIVE : { ...LIVE, coverage }, assets }), NOW);
+
+test('coverage: normalization rejects invalid coverage, invalid statuses and live-only metadata on fixture data', () => {
+  const assets = [asset({ id: 'f' }), failedAsset('x'), unrequested('y')];
+  const norm = (coverage: unknown, list: RawAsset[] = assets) => normalizeDataset({ dataset: { ...LIVE, coverage }, assets: list });
+  assert.equal(norm(COVERAGE).dataset.coverage!.historyNotRequested, 1); // valid input is accepted
+  // Live-only metadata on fixture data.
+  assert.throws(() => normalizeDataset({ dataset: { ...SYN, coverage: COVERAGE }, assets: [] }), /Only a live dataset/);
+  assert.throws(() => normalizeDataset({ dataset: SYN, assets: [unrequested('y')] }), /only a live dataset may set "historyStatus"/);
+  // Invalid statuses.
+  assert.throws(() => normalizeDataset({ dataset: LIVE, assets: [asset({ id: 'z', dailyVolumes: null, historyStatus: 'skipped' as never })] }), /unknown historyStatus "skipped"/);
+  assert.throws(() => normalizeDataset({ dataset: LIVE, assets: [asset({ id: 'z', historyStatus: 'not_requested' })] }), /has history data/);
+  // Invalid coverage.
+  const bad: [Record<string, unknown> | string, RegExp][] = [
+    ['all', /must be an object/],
+    [{ historyFetched: -1 }, /historyFetched must be a whole number/],
+    [{ requestsUsed: 2.5 }, /requestsUsed must be a whole number/],
+    [{ historyEligible: 4 }, /historyEligible must equal/],
+    [{ complete: true }, /complete must be true exactly when/],
+    [{ complete: 'no' }, /complete must be/],
+    [{ stopReason: null }, /stopReason must be text/],
+    [{ stopReason: '  ' }, /stopReason must be text/],
+    [{ requestsUsed: 4 }, /requestsUsed exceeds requestLimit/],
+    [{ requestsUsed: 2, requestLimit: 3 }, /lower than the requests the counts imply/],
+    [{ requestLimit: 0, requestsUsed: 0 }, /requestLimit must be at least 1/],
+  ];
+  for (const [change, error] of bad) {
+    assert.throws(() => norm(typeof change === 'string' ? change : { ...COVERAGE, ...change }), error, JSON.stringify(change));
+  }
+  // stopReason must be null when nothing was left unrequested.
+  const noneUnrequested = { ...COVERAGE, historyEligible: 2, historyNotRequested: 0 };
+  assert.throws(() => norm(noneUnrequested, [asset({ id: 'f' }), failedAsset('x')]), /stopReason must be text when assets were not requested, and null otherwise/);
+  assert.equal(norm({ ...noneUnrequested, stopReason: null }, [asset({ id: 'f' }), failedAsset('x')]).dataset.coverage!.stopReason, null);
+  // The counts must match the assets that carry each status.
+  assert.throws(() => norm(COVERAGE, [asset({ id: 'f' }), failedAsset('x'), failedAsset('y')]), /do not match/);
+});
+
+test('coverage: partial, no candidates - the conclusion is limited to the assets actually evaluated', () => {
+  const r = liveScan([asset({ id: 'f' }), failedAsset('x'), unrequested('y')], COVERAGE);
+  assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]), [['x', ['history_request_failed']], ['y', ['history_not_requested']]]);
+  const report = renderScanReport(r);
+  const flat = report.replace(/\s+/g, ' ');
+  assert.ok(flat.includes('History coverage: fetched for 1 of 3 assets that passed the non-history filters; 1 failed; 1 not requested (the per-run limit of 3 requests was reached). PARTIAL SCAN.'), report);
+  assert.ok(flat.includes('No candidates met the evidence threshold among the 1 asset whose history was fetched; 2 eligible assets were not evaluated (failed or not requested), so this is not a market-wide result.'), report);
+  assert.doesNotMatch(report, /^No candidates met the evidence threshold\.$/m);
+  assert.ok(report.includes('  history request failed: X'), report);
+  assert.ok(report.includes('  history not requested (request/rate limit): Y'), report);
+  assert.doesNotMatch(report, /undefined|too little history/);
+  assert.ok(report.split('\n').every((l) => l.length <= 100), report);
+});
+
+test('coverage: partial with candidates - the results are labeled as covering only part of the universe', () => {
+  const coverage = { ...COVERAGE, historyEligible: 2, historyRequestFailed: 0, requestsUsed: 2 };
+  const r = liveScan([mover({ id: 'm' }), unrequested('y')], coverage);
+  assert.deepEqual(symbols(r.movers), ['M']);
+  const flat = renderScanReport(r).replace(/\s+/g, ' ');
+  assert.ok(flat.includes('PARTIAL SCAN: these results cover only the 1 of 2 eligible assets whose history was fetched; 1 was not evaluated. MOVERS'), flat);
+});
+
+test('coverage: complete coverage keeps the plain conclusion and says so', () => {
+  const coverage = { historyEligible: 1, historyFetched: 1, historyRequestFailed: 0, historyNotRequested: 0, complete: true, stopReason: null, requestsUsed: 2, requestLimit: 160 };
+  const report = renderScanReport(liveScan([asset({ id: 'f' })], coverage));
+  assert.ok(report.includes('\nHistory coverage: fetched for 1 of 1 assets that passed the non-history filters. Complete.\n'), report);
+  assert.ok(report.includes('\nNo candidates met the evidence threshold.\n'), report);
+  assert.doesNotMatch(report, /PARTIAL|not a market-wide/);
+});
+
+test('coverage: statuses change only the exclusion reason; filtering, scores, ranking and candidates are unchanged', () => {
+  const assets = [
+    mover({ id: 'm1', change24hPct: 20 }), mover({ id: 'm2' }), asset({ id: 'w1', volume24h: 60e6, dailyVolumes: hist(20e6) }), asset({ id: 'q' }),
+    asset({ id: 'small', marketCap: 60e6 }), failedAsset('x'), unrequested('y'), unrequested('z'),
+  ];
+  const withStatus = liveScan(assets);
+  const without = liveScan(assets.map(({ historyStatus: _, ...a }) => a));
+  for (const k of ['universe', 'passedFilters', 'notCandidates', 'movers', 'watchlist', 'moversOverLimit', 'watchlistOverLimit', 'belowThreshold', 'symbolCollisions'] as const) {
+    assert.equal(JSON.stringify(withStatus[k]), JSON.stringify(without[k]), k);
+  }
+  assert.deepEqual(withStatus.excluded.map((e) => e.id), without.excluded.map((e) => e.id));
+  const codes = (r: typeof withStatus) => Object.fromEntries(r.excluded.map((e) => [e.id, e.reasons.map((x) => x.code).join()]));
+  assert.deepEqual(codes(withStatus), { small: 'below_market_cap', x: 'history_request_failed', y: 'history_not_requested', z: 'history_not_requested' });
+  assert.deepEqual(codes(without), { small: 'below_market_cap', x: 'insufficient_history', y: 'insufficient_history', z: 'insufficient_history' });
+  assert.deepEqual([symbols(withStatus.movers), symbols(withStatus.watchlist)], [['M1', 'M2'], ['W1']]);
 });

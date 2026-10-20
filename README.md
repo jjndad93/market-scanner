@@ -142,7 +142,7 @@ market data. The fixture (`test/fixtures/crypto-scan.synthetic.json`) uses inven
 Limitations: all thresholds, plausibility limits and points are provisional heuristics, not
 calibrated trading rules; scores measure the strength of observed evidence, not expected
 returns; catalysts are never verified in this stage; the stablecoin and wrapped-token lists are
-incomplete; and no real data has been run through the scanner yet. Known open items, left
+incomplete; and real data has been run through the scanner only in one capped smoke test. Known open items, left
 unchanged for now:
 
 - A missing 7-day change scores 0 for trend agreement, so a data gap can lower a candidate's
@@ -187,9 +187,23 @@ and never TEST DATA; fixture reports are always TEST DATA.
 
 **Failures never produce invented data.** If the markets request fails (timeout, HTTP error,
 rate limit, malformed response), no report is produced. HTTP 429 is retried once after the
-server's Retry-After (if given and at most 60 s). If a history request fails, that asset gets no
-history and is excluded for insufficient history; if the run is rate-limited or reaches the
-request limit, the remaining assets are listed in the report as not requested.
+server's Retry-After (if given and at most 60 s). Each asset that passes the non-history filters
+ends in exactly one of three history outcomes, and only the first is evaluated:
+
+- **fetched**: history was obtained and parsed. It can still be excluded as "too little
+  history" or "unreliable volume history" if it fails those rules.
+- **history request failed**: the request was sent but failed, or the response had no usable
+  volume data. The asset is excluded with that reason, not as "too little history".
+- **history not requested**: the run stopped requesting history (request limit reached or
+  rate-limited). The asset is excluded with that reason and was not evaluated.
+
+Live reports show a "History coverage" line (fetched / failed / not requested out of the
+eligible assets). When anything failed or was not requested it says PARTIAL SCAN, and the
+conclusion ("No candidates ...", or the candidate lists) is stated as covering only the assets
+whose history was fetched. `--json` carries the same figures in `dataset.coverage`
+(`historyEligible`, `historyFetched`, `historyRequestFailed`, `historyNotRequested`, `complete`,
+`stopReason` - null when nothing was left unrequested - `requestsUsed`, `requestLimit`). A
+partial scan still exits with code 0; check `complete` to detect one.
 
 **API key.** Live mode reads the key only from the `COINGECKO_DEMO_API_KEY` environment
 variable. Store it as a Windows *user* environment variable (System Properties > Environment
@@ -207,7 +221,7 @@ first, duplicates collapsed; conflicting duplicates, missing days and missing re
 counted as unusable) and every live report says the meaning is not yet verified. This must be confirmed
 with a separately approved live check (S7) before live results are relied on.
 
-Not done yet: a history cache (S6) and any live request (S7), both pending approval.
+Not done yet: a history cache (S6), pending approval.
 
 ## Tests
 

@@ -281,3 +281,37 @@ test('--json: DEL and C1 control characters are escaped in stdout, and values pa
   assert.equal(parsed.movers[0].asset.name, name, 'original name preserved');
   assert.equal(parsed.movers[0].asset.symbol, 'X\u009bY', 'original (normalized) symbol preserved');
 });
+
+test('partial coverage: a capped live run reports coverage in JSON and text, and still exits 0', async () => {
+  // SYNTHETIC: two eligible coins that match no pattern (flat price, volume at its median); a cap
+  // of 2 leaves room for the markets request and one history request only.
+  const coinRow = (id: string) => ({ id, symbol: id.slice(4), name: `Live-shaped ${id}`, current_price: 5, market_cap: 1e9, total_volume: 50e6, price_change_percentage_24h: 0.5, price_change_percentage_7d_in_currency: 1, last_updated: '2026-10-21T11:59:00Z' });
+  const urls: string[] = [];
+  const fn: FetchLike = async (url) => {
+    urls.push(url);
+    const body = url.includes('/coins/markets')
+      ? [coinRow('syn-one'), coinRow('syn-two')]
+      : { total_volumes: Array.from({ length: 35 }, (_, i) => [TODAY - (35 - i) * DAY_MS, 50e6]) };
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(body) };
+  };
+  const json = deps({ env: { COINGECKO_DEMO_API_KEY: KEY }, fetch: fn });
+  assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2', '--json'], json.d), 0, json.err.join('\n'));
+  assert.equal(urls.length, 2);
+  const result = JSON.parse(json.out.join('\n'));
+  assert.deepEqual(result.dataset.coverage, {
+    historyEligible: 2, historyFetched: 1, historyRequestFailed: 0, historyNotRequested: 1, complete: false,
+    stopReason: 'the per-run limit of 2 requests was reached', requestsUsed: 2, requestLimit: 2,
+  });
+  assert.deepEqual(result.excluded.map((e: { id: string; reasons: { code: string }[] }) => [e.id, e.reasons.map((r) => r.code)]), [['syn-two', ['history_not_requested']]]);
+  assert.equal(result.passedFilters, 1);
+
+  urls.length = 0;
+  const text = deps({ env: { COINGECKO_DEMO_API_KEY: KEY }, fetch: fn });
+  assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2'], text.d), 0, text.err.join('\n'));
+  assert.equal(urls.length, 2);
+  const flat = text.out.join('\n').replace(/\s+/g, ' ');
+  assert.ok(flat.includes('History coverage: fetched for 1 of 2 assets that passed the non-history filters; 0 failed; 1 not requested (the per-run limit of 2 requests was reached). PARTIAL SCAN.'), flat);
+  assert.ok(flat.includes('so this is not a market-wide result.'), flat);
+  assert.ok(flat.includes('history not requested (request/rate limit): TWO'), flat);
+  for (const s of [json.out.join(''), json.err.join(''), text.out.join(''), text.err.join('')]) assert.ok(!s.includes(KEY));
+});

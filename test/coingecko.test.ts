@@ -138,15 +138,34 @@ test('a live run requests history only for assets that pass the non-history filt
   assert.equal(r.movers[0]!.asset.dailyVolumes.length, 30); // 91 completed days supplied, last 30 used
   assert.deepEqual([r.movers[0]!.asset.history.supplied, r.movers[0]!.asset.history.windowDays], [91, 30]);
   assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons[0]!.code]), [['syn-small', 'below_market_cap'], ['tether', 'stablecoin']]);
+  // Complete coverage: the one eligible asset's history was fetched.
+  assert.deepEqual(data.dataset.coverage, {
+    historyEligible: 1, historyFetched: 1, historyRequestFailed: 0, historyNotRequested: 0, complete: true, stopReason: null, requestsUsed: 2, requestLimit: 160,
+  });
+  assert.ok(data.assets.every((a) => !('historyStatus' in a)));
 });
+
+/** Every eligible asset is counted exactly once, and the per-asset statuses match the counts. */
+function assertCoverageAddsUp(data: Awaited<ReturnType<typeof live>>['data']) {
+  const c = data.dataset.coverage;
+  assert.equal(c.historyFetched + c.historyRequestFailed + c.historyNotRequested, c.historyEligible);
+  const withStatus = (s: string) => new Set(data.assets.filter((a) => a.historyStatus === s).map((a) => a.id)).size;
+  assert.equal(withStatus('request_failed'), c.historyRequestFailed);
+  assert.equal(withStatus('not_requested'), c.historyNotRequested);
+}
 
 test('a failed history request leaves that asset without history; nothing is invented', async () => {
   const markets = [coin({ id: 'syn-a' }), coin({ id: 'syn-b', symbol: 'sb' })];
   const { data } = await live(markets, (id) => (id === 'syn-a' ? { status: 500 } : { status: 200, body: chart(20e6) }));
   const r = scan(data);
   assert.deepEqual(r.movers.map((c) => c.asset.id), ['syn-b']);
-  assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons[0]!.code]), [['syn-a', 'insufficient_history']]);
+  // A failed request is not "too little history": the asset was not evaluated.
+  assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]), [['syn-a', ['history_request_failed']]]);
   assert.ok(data.dataset.notes.some((n) => /History request failed for 1 asset\(s\) \(syn-a\)/.test(n)), data.dataset.notes.join(' | '));
+  assert.deepEqual(data.dataset.coverage, {
+    historyEligible: 2, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 0, complete: false, stopReason: null, requestsUsed: 3, requestLimit: 160,
+  });
+  assertCoverageAddsUp(data);
 });
 
 test('a malformed history body, or too little history, leaves the asset excluded with nothing invented', async () => {
@@ -158,8 +177,12 @@ test('a malformed history body, or too little history, leaves the asset excluded
   const r = scan(data);
   assert.deepEqual(r.movers.map((c) => c.asset.id), ['syn-ok']);
   const reasons = Object.fromEntries(r.excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]));
-  assert.deepEqual(reasons['syn-bad'], ['insufficient_history']);
+  // No usable volume data counts as a failed request; a genuinely short series is "too little history".
+  assert.deepEqual(reasons['syn-bad'], ['history_request_failed']);
   assert.deepEqual(reasons['syn-short'], ['insufficient_history']);
+  // historyFetched means obtained and parsed: syn-short counts as fetched even though it is too short.
+  assert.deepEqual([data.dataset.coverage.historyFetched, data.dataset.coverage.historyRequestFailed, data.dataset.coverage.complete], [2, 1, false]);
+  assertCoverageAddsUp(data);
   assert.ok(data.dataset.notes.some((n) => n.includes('History request failed for 1 asset(s) (syn-bad)')), data.dataset.notes.join(' | '));
   // The short series really did supply only its own 10 days (no padding with invented values).
   const short = data.assets.find((a) => a.id === 'syn-short')!;
@@ -173,6 +196,22 @@ test('a rate limit on history stops further history requests and is reported', a
   // Remediation F1: syn-b WAS requested (it got a 429), so it is reported as failed, not "not requested".
   assert.ok(data.dataset.notes.some((n) => n.includes('History request failed for 1 asset(s) (syn-b)')), data.dataset.notes.join(' | '));
   assert.ok(data.dataset.notes.some((n) => n.includes('History not requested for 1 asset(s) (syn-c) because the provider rate-limited the run')), data.dataset.notes.join(' | '));
+  const codes = Object.fromEntries(scan(data).excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]));
+  assert.deepEqual([codes['syn-b'], codes['syn-c']], [['history_request_failed'], ['history_not_requested']]);
+  assert.deepEqual(data.dataset.coverage, {
+    historyEligible: 3, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 1, complete: false, stopReason: 'the provider rate-limited the run', requestsUsed: 3, requestLimit: 160,
+  });
+  assertCoverageAddsUp(data);
+});
+
+test('a rate limit on the last eligible asset leaves nothing unrequested, so stopReason is null', async () => {
+  const markets = ['a', 'b'].map((x) => coin({ id: `syn-${x}`, symbol: `s${x}` }));
+  const { data } = await live(markets, (id) => (id === 'syn-a' ? { status: 200, body: chart(20e6) } : { status: 429 }));
+  assert.deepEqual(data.dataset.coverage, {
+    historyEligible: 2, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 0, complete: false, stopReason: null, requestsUsed: 3, requestLimit: 160,
+  });
+  assertCoverageAddsUp(data);
+  scan(data); // the normalizer accepts it
 });
 
 test('the per-run request cap is enforced and reported', async () => {
@@ -180,6 +219,20 @@ test('the per-run request cap is enforced and reported', async () => {
   const { data, urls } = await live(markets, () => ({ status: 200, body: chart(20e6) }), 3);
   assert.equal(urls.length, 3); // 1 markets + 2 history
   assert.ok(data.dataset.notes.some((n) => /not requested for 3 asset\(s\) \(syn-c, syn-d, syn-e\) because the per-run limit of 3 requests was reached/.test(n)), data.dataset.notes.join(' | '));
+  // Never-requested assets are excluded as not requested, not as "too little history".
+  const r = scan(data);
+  assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]), [
+    ['syn-c', ['history_not_requested']], ['syn-d', ['history_not_requested']], ['syn-e', ['history_not_requested']],
+  ]);
+  assert.deepEqual(data.dataset.coverage, {
+    historyEligible: 5, historyFetched: 2, historyRequestFailed: 0, historyNotRequested: 3, complete: false,
+    stopReason: 'the per-run limit of 3 requests was reached', requestsUsed: 3, requestLimit: 3,
+  });
+  assertCoverageAddsUp(data);
+  const report = renderScanReport(r).replace(/\s+/g, ' ');
+  assert.ok(report.includes('History coverage: fetched for 2 of 5 assets that passed the non-history filters; 0 failed; 3 not requested (the per-run limit of 3 requests was reached). PARTIAL SCAN.'), report);
+  assert.ok(report.includes('PARTIAL SCAN: these results cover only the 2 of 5 eligible assets whose history was fetched; 3 were not evaluated.'), report);
+  assert.ok(report.includes('history not requested (request/rate limit): SC, SD, SE'), report);
 });
 
 test('a failed or malformed markets response produces no dataset', async () => {

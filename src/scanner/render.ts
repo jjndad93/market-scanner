@@ -20,6 +20,8 @@ const EXCLUSION_LABEL: Record<ExclusionCode, string> = {
   below_volume: 'below volume minimum',
   insufficient_history: 'too little history',
   unreliable_history: 'unreliable volume history',
+  history_not_requested: 'history not requested (request/rate limit)',
+  history_request_failed: 'history request failed',
   stale_data: 'stale data',
 };
 
@@ -102,11 +104,28 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
     out.push(`Snapshot: ${formatNy(new Date(r.dataset.asOf))}. Live data fetched by this tool; values are as reported by the source.`);
   }
   out.push(`Universe: ${r.universe} assets; ${r.passedFilters} passed filters; ${r.excluded.length} excluded.`);
+  // Live only: how much of the history-eligible universe was actually evaluated.
+  const cov = r.dataset.coverage;
+  const partial = cov !== undefined && !cov.complete;
+  if (cov !== undefined) {
+    const status = partial
+      ? `; ${cov.historyRequestFailed} failed; ${cov.historyNotRequested} not requested${cov.stopReason !== null ? ` (${cov.stopReason})` : ''}. PARTIAL SCAN.`
+      : '. Complete.';
+    out.push(...wrap(`History coverage: fetched for ${cov.historyFetched} of ${cov.historyEligible} assets that passed the non-history filters${status}`, '  ', ''));
+  }
+  const unevaluated = cov !== undefined ? cov.historyRequestFailed + cov.historyNotRequested : 0;
+  const assetCount = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  const wasWere = (n: number) => (n === 1 ? 'was' : 'were');
 
   if (r.movers.length === 0 && r.watchlist.length === 0) {
-    out.push('', 'No candidates met the evidence threshold.');
+    if (partial) {
+      out.push('', ...wrap(`No candidates met the evidence threshold among the ${assetCount(cov.historyFetched, 'asset')} whose history was fetched; ${assetCount(unevaluated, 'eligible asset')} ${wasWere(unevaluated)} not evaluated (failed or not requested), so this is not a market-wide result.`, '', ''));
+    } else {
+      out.push('', 'No candidates met the evidence threshold.');
+    }
     if (r.belowThreshold.length > 0) out.push(...wrap(`Matched a pattern but scored below the threshold: ${symbolList(r.belowThreshold, ambiguous)}.`, '  ', '  '));
   } else {
+    if (partial) out.push('', ...wrap(`PARTIAL SCAN: these results cover only the ${cov.historyFetched} of ${cov.historyEligible} eligible assets whose history was fetched; ${unevaluated} ${wasWere(unevaluated)} not evaluated.`, '', ''));
     out.push('', `MOVERS - large move on unusual volume (evidence strength, not a forecast): ${r.movers.length} of max ${rules.maxMovers}`);
     if (r.movers.length === 0) out.push('  None met the evidence threshold.');
     r.movers.forEach((c, i) => out.push(...renderMover(c, i, now, ambiguous)));

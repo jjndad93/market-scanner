@@ -26,7 +26,7 @@ import { DAY_MS } from '../core/time.ts';
 import { computeMetrics, exclusionReasons } from '../scanner/analyze.ts';
 import { normalizeDataset } from '../scanner/normalize.ts';
 import { SCAN_RULES, type ScanRules } from '../scanner/rules.ts';
-import type { RawAsset } from '../scanner/types.ts';
+import type { HistoryCoverage, HistoryStatus, RawAsset } from '../scanner/types.ts';
 import { type HttpClient, HttpError } from './http.ts';
 
 export const COINGECKO_DEMO_BASE_URL = 'https://api.coingecko.com/api/v3';
@@ -200,7 +200,7 @@ export interface LiveFetchOptions {
 
 /** A live dataset ready for normalizeDataset, plus counts for the caller. */
 export interface LiveDataset {
-  dataset: { kind: 'live'; label: string; source: string; asOf: string; attribution: string; notes: string[] };
+  dataset: { kind: 'live'; label: string; source: string; asOf: string; attribution: string; notes: string[]; coverage: HistoryCoverage };
   assets: RawAsset[];
   /** Present only when diagnostics were requested; not part of the scanner input. */
   diagnostics?: HistoryDiagnostic[];
@@ -305,13 +305,30 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
     }
   }
 
-  const withHistory = assets.map((a) => (isRecord(a) && typeof a.id === 'string' && history.has(a.id) ? { ...a, dailyVolumes: history.get(a.id)! } : a));
+  // Each eligible id ends in exactly one of: history (fetched), failed, notRequested.
+  const status = new Map<string, HistoryStatus>([...failed.map((id) => [id, 'request_failed'] as const), ...notRequested.map((id) => [id, 'not_requested'] as const)]);
+  const withHistory = assets.map((a) => {
+    if (!isRecord(a) || typeof a.id !== 'string') return a;
+    if (history.has(a.id)) return { ...a, dailyVolumes: history.get(a.id)! };
+    const s = status.get(a.id);
+    return s !== undefined ? { ...a, historyStatus: s } : a;
+  });
+  const coverage: HistoryCoverage = {
+    historyEligible: eligible.length,
+    historyFetched: history.size,
+    historyRequestFailed: failed.length,
+    historyNotRequested: notRequested.length,
+    complete: failed.length === 0 && notRequested.length === 0,
+    stopReason: notRequested.length > 0 ? stopReason : null,
+    requestsUsed: client.callsMade,
+    requestLimit: maxCalls,
+  };
   const notes = [
     `${assets.length} assets from /coins/markets; ${client.callsMade} of ${maxCalls} allowed requests used.`,
     `Volume history fetched for ${history.size} of ${eligible.length} assets that passed the non-history filters; ${skippedByFilters} assets were already excluded by those filters and their history was not requested.`,
   ];
-  if (failed.length > 0) notes.push(`History request failed for ${failed.length} asset(s) (${idList(failed)}); they are excluded for insufficient history.`);
-  if (notRequested.length > 0) notes.push(`History not requested for ${notRequested.length} asset(s) (${idList(notRequested)}) because ${stopReason}; they are excluded for insufficient history.`);
+  if (failed.length > 0) notes.push(`History request failed for ${failed.length} asset(s) (${idList(failed)}); they are excluded as history request failed and were not evaluated.`);
+  if (notRequested.length > 0) notes.push(`History not requested for ${notRequested.length} asset(s) (${idList(notRequested)}) because ${stopReason}; they are excluded as history not requested and were not evaluated.`);
   const today = odd.todayMidnight + odd.todayAfterMidnight;
   if (today + odd.priorIntraday + odd.invalid + odd.future > 0 || odd.conflicts > 0 || odd.gaps > 0 || odd.missingRecent > 0) {
     notes.push(`History points not used: ${today} from the current (incomplete) UTC day (${odd.todayMidnight} at 00:00 UTC, ${odd.todayAfterMidnight} later), ${odd.priorIntraday} earlier points not at 00:00 UTC, ${odd.future} future, ${odd.invalid} invalid; ${odd.conflicts} conflicting duplicates, ${odd.gaps} missing days and ${odd.missingRecent} missing recent days counted as unusable.`);
@@ -319,7 +336,7 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   notes.push('The exact meaning of a daily history volume point (rolling 24h vs calendar day) is not yet verified against live data.');
 
   return {
-    dataset: { kind: 'live', label: 'CoinGecko live snapshot', source: COINGECKO_SOURCE, asOf: fetchedAt.toISOString(), attribution: COINGECKO_ATTRIBUTION, notes },
+    dataset: { kind: 'live', label: 'CoinGecko live snapshot', source: COINGECKO_SOURCE, asOf: fetchedAt.toISOString(), attribution: COINGECKO_ATTRIBUTION, notes, coverage },
     assets: withHistory,
     ...(diagnostics ? { diagnostics } : {}),
   };

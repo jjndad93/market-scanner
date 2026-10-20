@@ -87,7 +87,14 @@ export function exclusionReasons(a: AssetSnapshot, m: AssetMetrics, rules: ScanR
   const h = a.history;
   const unusable = h.zeroDays + h.invalidEntries;
   const historyNote = `${a.dailyVolumes.length} valid of ${h.windowDays} days used${h.supplied > h.windowDays ? ` (latest ${h.windowDays} of ${h.supplied} supplied)` : ''}; ${h.zeroDays} zero-volume, ${h.invalidEntries} invalid`;
-  if (a.dailyVolumes.length < rules.minHistoryDays) {
+  // Live runs mark assets whose history was never obtained, so they are not reported as having
+  // too little history: they were not evaluated. Such an asset has no history data, so it is
+  // excluded exactly as before; only the reason differs.
+  if (a.historyStatus === 'not_requested') {
+    reasons.push({ code: 'history_not_requested', detail: 'volume history was not requested in this run (request or rate limit reached); not evaluated' });
+  } else if (a.historyStatus === 'request_failed') {
+    reasons.push({ code: 'history_request_failed', detail: 'the volume history request failed or returned no usable volume data; not evaluated' });
+  } else if (a.dailyVolumes.length < rules.minHistoryDays) {
     reasons.push({ code: 'insufficient_history', detail: `${historyNote}; ${rules.minHistoryDays} valid days needed for a baseline` });
   }
   if (unusable > rules.maxUnreliableHistoryDays) {
