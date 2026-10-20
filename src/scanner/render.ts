@@ -103,17 +103,25 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
     out.push(`Attribution: ${r.dataset.attribution}`);
     out.push(`Snapshot: ${formatNy(new Date(r.dataset.asOf))}. Live data fetched by this tool; values are as reported by the source.`);
   }
-  out.push(`Universe: ${r.universe} assets; ${r.passedFilters} passed filters; ${r.excluded.length} excluded.`);
   // Live only: how much of the history-eligible universe was actually evaluated.
   const cov = r.dataset.coverage;
   const partial = cov !== undefined && !cov.complete;
+  // Assets whose history was never obtained (distinct ids from the provider's coverage). Every record
+  // of such an asset is excluded (with its history code, or as a duplicate), so this never exceeds
+  // the excluded total, and the Universe line, coverage line and conclusion all use the same count.
+  const unevaluated = cov !== undefined ? cov.historyRequestFailed + cov.historyNotRequested : 0;
+  if (partial) {
+    // Separate exclusions that are "not evaluated" (history never obtained) from real filter failures.
+    out.push(...wrap(`Universe: ${r.universe} assets; ${r.passedFilters} passed all filters; ${r.excluded.length} excluded (${unevaluated} not evaluated: history not requested or failed).`, '  ', ''));
+  } else {
+    out.push(`Universe: ${r.universe} assets; ${r.passedFilters} passed filters; ${r.excluded.length} excluded.`);
+  }
   if (cov !== undefined) {
     const status = partial
       ? `; ${cov.historyRequestFailed} failed; ${cov.historyNotRequested} not requested${cov.stopReason !== null ? ` (${cov.stopReason})` : ''}. PARTIAL SCAN.`
       : '. Complete.';
     out.push(...wrap(`History coverage: fetched for ${cov.historyFetched} of ${cov.historyEligible} assets that passed the non-history filters${status}`, '  ', ''));
   }
-  const unevaluated = cov !== undefined ? cov.historyRequestFailed + cov.historyNotRequested : 0;
   const assetCount = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
   const wasWere = (n: number) => (n === 1 ? 'was' : 'were');
 

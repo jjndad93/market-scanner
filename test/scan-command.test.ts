@@ -312,6 +312,7 @@ test('partial coverage: a capped live run reports coverage in JSON and text, and
   const flat = text.out.join('\n').replace(/\s+/g, ' ');
   assert.ok(flat.includes('History coverage: fetched for 1 of 2 assets that passed the non-history filters; 0 failed; 1 not requested (the per-run limit of 2 requests was reached). PARTIAL SCAN.'), flat);
   assert.ok(flat.includes('so this is not a market-wide result.'), flat);
+  assert.ok(flat.includes('Universe: 2 assets; 1 passed all filters; 1 excluded (1 not evaluated: history not requested or failed).'), flat);
   assert.ok(flat.includes('history not requested (request/rate limit): TWO'), flat);
   for (const s of [json.out.join(''), json.err.join(''), text.out.join(''), text.err.join('')]) assert.ok(!s.includes(KEY));
 });

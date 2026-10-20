@@ -618,6 +618,43 @@ test('coverage: complete coverage keeps the plain conclusion and says so', () =>
   assert.ok(report.includes('\nHistory coverage: fetched for 1 of 1 assets that passed the non-history filters. Complete.\n'), report);
   assert.ok(report.includes('\nNo candidates met the evidence threshold.\n'), report);
   assert.doesNotMatch(report, /PARTIAL|not a market-wide/);
+  // Complete coverage keeps the original universe wording exactly.
+  assert.ok(report.includes('\nUniverse: 1 assets; 1 passed filters; 0 excluded.\n'), report);
+  assert.doesNotMatch(report, /passed all filters|not evaluated/);
+});
+
+test('coverage: a partial universe summary separates not-evaluated assets from filter failures', () => {
+  // 5 records: 1 passes every filter, 1 fails a non-history filter, 1 has too little fetched
+  // history, 1 history request failed, 1 history not requested. Eligible for history: 4.
+  const coverage = { ...COVERAGE, historyEligible: 4, historyFetched: 2, requestsUsed: 4, requestLimit: 4 };
+  const r = liveScan([
+    asset({ id: 'f' }), asset({ id: 'small', marketCap: 60e6 }), asset({ id: 'short', dailyVolumes: hist(50e6, 10) }), failedAsset('x'), unrequested('y'),
+  ], coverage);
+  assert.deepEqual(Object.fromEntries(r.excluded.map((e) => [e.id, e.reasons[0]!.code])), {
+    short: 'insufficient_history', small: 'below_market_cap', x: 'history_request_failed', y: 'history_not_requested',
+  });
+  const report = renderScanReport(r);
+  const flat = report.replace(/\s+/g, ' ');
+  // Both history codes count as not evaluated; a filter failure and a too-short fetched history do not.
+  assert.ok(flat.includes(' Universe: 5 assets; 1 passed all filters; 4 excluded (2 not evaluated: history not requested or failed). History coverage:'), report);
+  assert.ok(report.split('\n').every((l) => l.length <= 100), report);
+  // The parts reconcile: passed + excluded = universe, and not evaluated = failed + not requested.
+  assert.equal(r.passedFilters + r.excluded.length, r.universe);
+  assert.equal(2, coverage.historyRequestFailed + coverage.historyNotRequested);
+});
+
+test('coverage: conflicting duplicates of an unrequested id still count as not evaluated in the universe summary', () => {
+  // Anomalous provider output: two records share id "dup" but disagree, and its history was not
+  // requested. Duplicate handling excludes both as conflicts before any history rule runs.
+  const coverage = { ...COVERAGE, historyEligible: 2, historyRequestFailed: 0, requestsUsed: 2, requestLimit: 2, stopReason: 'the per-run limit of 2 requests was reached' };
+  const r = liveScan([asset({ id: 'f' }), unrequested('dup'), { ...unrequested('dup'), name: 'Synthetic dup (other)' }], coverage);
+  assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]), [['dup', ['duplicate_conflict']], ['dup', ['duplicate_conflict']]]);
+  const report = renderScanReport(r);
+  const flat = report.replace(/\s+/g, ' ');
+  // The Universe line and the coverage line agree on the one asset that was not evaluated.
+  assert.ok(flat.includes(' Universe: 3 assets; 1 passed all filters; 2 excluded (1 not evaluated: history not requested or failed). '), report);
+  assert.ok(flat.includes('; 0 failed; 1 not requested (the per-run limit of 2 requests was reached). PARTIAL SCAN.'), report);
+  assert.ok(report.split('\n').every((l) => l.length <= 100), report);
 });
 
 test('coverage: statuses change only the exclusion reason; filtering, scores, ranking and candidates are unchanged', () => {
