@@ -9,6 +9,7 @@ export type EvidenceKind =
   | 'calculated' // derived by this tool from other evidence with a stated formula
   | 'third_party' // reported by someone else (news, broker-computed Greeks, filings)
   | 'estimate' // a model output, default assumption or interpretation
+  | 'test_data' // from a synthetic fixture: invented values, never market data
   | 'missing'; // not available; `note` says why
 
 export interface Evidence<T> {
@@ -29,6 +30,7 @@ export const KIND_LABEL: Record<EvidenceKind, string> = {
   calculated: 'CALCULATED',
   third_party: 'THIRD-PARTY',
   estimate: 'ESTIMATE',
+  test_data: 'TEST DATA',
   missing: 'MISSING',
 };
 
@@ -38,6 +40,7 @@ export const KIND_LEGEND: Record<EvidenceKind, string> = {
   calculated: 'derived by this tool from the other values (formula shown)',
   third_party: 'a figure reported by your broker or another source',
   estimate: 'model output or default assumption; not a fact',
+  test_data: 'invented value from a synthetic test fixture; not market data',
   missing: 'not available',
 };
 
@@ -59,6 +62,10 @@ export function thirdParty<T>(value: T, source: string, asOf: string | null = nu
 
 export function estimate<T>(value: T, basis: string, note?: string, asOf: string | null = null): Evidence<T> {
   return { kind: 'estimate', value, source: basis, asOf, note };
+}
+
+export function testData<T>(value: T, source: string, asOf: string | null = null, note?: string): Evidence<T> {
+  return { kind: 'test_data', value, source, asOf, note };
 }
 
 export function missing<T>(reason: string): Evidence<T> {

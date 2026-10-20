@@ -3,8 +3,9 @@
 A local research tool for US stocks, crypto and call options. It explains evidence; it does
 not predict prices, connect to a brokerage, place orders or trade automatically.
 
-**Status: Stage 1.** The offline call-option evaluator works. The morning scanner
-(`scan`) is planned for Stages 2-5 and is not built yet.
+**Status: Stage 1 complete; Stage 2 phase P1.** The offline call-option evaluator works. The
+crypto scanner's offline logic and report exist and are tested with synthetic fixtures only;
+live data and the `scan` command are not built yet.
 
 ## Requirements
 
@@ -81,6 +82,78 @@ Everything else is optional. If something is missing, the report lists it instea
   while the stock rises.
 - **Model limitations**, including Black-Scholes' treatment of American exercise and dividends.
 
+## Crypto morning scanner (Stage 2, phase P1: offline logic only)
+
+P1 contains the scanner's logic and report, exercised **only with synthetic test fixtures**.
+It does **not** fetch market data: there is no network code, API key, data provider, cache or
+`scan` command yet (those are later, separately approved phases). `node src/cli.ts scan`
+still reports that the scanner is not built.
+
+What P1 does, given a dataset of assets (price, 24h and 7-day change, 24h volume, market cap,
+last-updated time, and prior daily volumes):
+
+- **Filters**, each with an explicit reason that is kept and shown: stablecoins (known id,
+  symbol or tag), *possible* stablecoins (heuristic, see below), wrapped/staked/liquid-staking/
+  bridged tokens, missing data, market cap below $100M, 24h volume below $10M, and data older
+  than 15 minutes (or timestamped in the future).
+- **Plausibility (data quality, not market judgment)**: a 24h change beyond +/-300%, a 7-day
+  change beyond +/-1000%, 24h volume above the whole market cap (turnover > 100%), or relative
+  volume above 50x is treated as a probable data error. The asset is excluded with the reason
+  "implausible data" and earns no points; it is not counted as weak or strong. A genuine
+  extreme move would also be excluded.
+- **Volume history**: only the latest 30 daily entries are used (history must be ordered
+  oldest-first). The window is applied by `normalizeDataset(input, rules)`; `runScan` refuses
+  rules whose window differs from the one used to normalize the data. Zero-volume days and invalid
+  entries (text, null, negative, non-finite) are counted and disclosed, never dropped silently;
+  zeros are not used in the median because providers often report 0 for missing data. At least
+  20 valid days are required, more than 5 zero/invalid days makes the history unreliable, and
+  a median baseline under $1M/day is too small to support a volume ratio.
+- **Duplicates and symbol collisions**: identical duplicate records are counted once (the extra
+  copy is listed as a duplicate); records that share an id but disagree are all excluded, since
+  there is no basis for choosing one. Distinct ids that share a symbol are flagged under
+  "DATA NOTES" and shown with their ids. Records with no usable id are excluded under a label
+  derived from their content (`(no id) <hash>`), so results and the report do not depend on
+  input order; identical malformed records share a label but are each counted.
+- **Tags** are matched exactly after normalization (lower case; spaces and underscores become
+  hyphens) against short lists in `src/scanner/rules.ts`. Negations and near-matches such as
+  `non-stablecoin` or `unstaked-rewards` never match; tag spellings not on the lists are not
+  recognized.
+- **Stablecoin heuristic**: a known id, symbol or tag is definitive. Otherwise a price within
+  2% of $1 with almost no 24h movement (and a quiet or missing 7-day change) is excluded as a
+  *possible* stablecoin, labeled as a heuristic. Known limits: a genuine asset that happens to
+  trade quietly near $1 is excluded (false positive) unless tagged `not-stablecoin`; a
+  stablecoin missing from the lists that loses its peg and moves sharply is not caught and can
+  appear as a mover (false negative). The symbol and id lists are incomplete, and the ids
+  follow CoinGecko naming that must be re-verified when a real provider is added.
+- **Metrics**: relative volume (24h volume / median prior daily volume) and turnover
+  (24h volume / market cap), both tagged as calculated.
+- **Patterns**: *movers* (|24h change| >= 8% on >= 1.5x normal volume) and a *watchlist*
+  (|24h change| < 5% on >= 2x normal volume: a research lead, not a prediction).
+- **Evidence score** with a published points table (unusual volume, size of move, liquidity,
+  7-day trend agreement). Movers need 4/8 and watchlist entries 3/5. Ties are broken by
+  relative volume, then volume, then id, so results are deterministic. At most 5 movers and
+  3 watchlist entries are shown; the rest are counted, not dropped.
+- **Report**: a short text report; when nothing qualifies it says "No candidates met the
+  evidence threshold."
+
+Honest labeling: P1 only accepts datasets declared `"kind": "synthetic"`, tags every value
+`TEST DATA`, and prints a TEST DATA banner, so fixture numbers can never be presented as
+market data. The fixture (`test/fixtures/crypto-scan.synthetic.json`) uses invented coins.
+
+Limitations: all thresholds, plausibility limits and points are provisional heuristics, not
+calibrated trading rules; scores measure the strength of observed evidence, not expected
+returns; catalysts are never verified in this stage; the stablecoin and wrapped-token lists are
+incomplete; and no real data has been run through the scanner yet. Known open items, left
+unchanged for now:
+
+- A missing 7-day change scores 0 for trend agreement, so a data gap can lower a candidate's
+  score (and push it below the threshold). The gap is stated in the score breakdown.
+- The dataset snapshot time and each asset's last-updated time are not cross-validated (for
+  example, a snapshot timed after the scan time is accepted).
+- The report layout needs a later review: only the first exclusion reason is shown per asset,
+  below-threshold entries show only their score, and movers (scored out of 8) and watchlist
+  entries (out of 5) use different scales.
+
 ## Tests
 
 ```
@@ -96,6 +169,7 @@ src/options/              parse -> evaluate -> render for the option command
   blackScholes.ts         pricing, Greeks, implied-volatility solver
   payoff.ts               breakeven, max loss, expiration scenarios
   evaluate.ts             checks, verdict, explanations (thresholds in THRESHOLDS)
+src/scanner/              crypto scanner (P1, offline): types, rules, normalize, analyze, render
 src/cli.ts                `option` and `scan` commands
 test/                     node:test suites (textbook values and hypothetical inputs)
 examples/                 clearly labelled hypothetical input
