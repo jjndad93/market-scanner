@@ -445,10 +445,31 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     thetaShare = -greeks.thetaPerDay / modelValue;
     const method = 'Black-Scholes-Merton with the calculated IV';
     // When a 1-point IV change moves the price by less than half a cent, the quote barely
-    // constrains IV (typical deep in the money): rounding alone can shift it a lot.
+    // constrains IV: rounding alone can shift it a lot. Low vega has several causes (deep in the
+    // money, far out of the money, very little time left), so the explanation names the one
+    // that applies to this contract rather than assuming one.
     if (greeks.vegaPerVolPoint < 0.005) {
-      warnings.push('This option is almost entirely intrinsic value, so its price barely depends on volatility. The calculated implied volatility, and the Greeks and probabilities built on it, are poorly determined. Small rounding in the quote can change them substantially.');
-      flagData('model:iv_poorly_determined', 'Implied volatility: poorly determined, because the price barely depends on volatility (almost all intrinsic value). IV-based numbers may shift substantially with small quote changes.');
+      const intrinsicNow = Math.max(s - k, 0);
+      const share = intrinsicNow / modelValue;
+      let cause: string;
+      if (intrinsicNow > 0 && modelValue < intrinsicNow) {
+        // IV is solved so the model reproduces the quoted price. With rates >= 0 the solver cannot
+        // match a price below intrinsic unless a dividend yield was entered (European exercise).
+        // That explains the model, not necessarily the market: the quote may simply be bad.
+        cause = `it is in the money, and its model value (${money(modelValue)}, matched to the quoted price) is below its intrinsic value (${money(intrinsicNow)}); the European-exercise model can reproduce that only because a dividend yield was entered, but an American-style call should not trade below intrinsic value, so the quote may also be stale or off-market`;
+      } else if (intrinsicNow > 0) {
+        // Never round a share just under 100% up to "about 100%": that would hide the time value.
+        cause = share >= 0.995
+          ? 'it is in the money and more than 99% of its value is intrinsic value'
+          : `it is in the money and about ${pct(share, 0)} of its value is intrinsic value`;
+      } else {
+        const worth = modelValue < 0.01 ? 'worth less than $0.01 per share' : `worth only about ${money(modelValue)} per share`;
+        cause = `it is out of the money, so it has no intrinsic value, and it is ${worth}`;
+      }
+      const timeNote = dte <= THRESHOLDS.shortDte ? ', and very little time remains' : '';
+      const vegaText = `a 1-point change in implied volatility moves its price by only about ${money(greeks.vegaPerVolPoint, 4)} per share`;
+      warnings.push(`This option's price barely depends on volatility: ${vegaText}, because ${cause}${timeNote}. The calculated implied volatility, and the Greeks and probabilities built on it, are poorly determined. Small rounding in the quote can change them substantially.`);
+      flagData('model:iv_poorly_determined', `Implied volatility: poorly determined, because ${vegaText} (${cause}${timeNote}). IV-based numbers may shift substantially with small quote changes.`);
     }
 
     const sdMove = s * iv * Math.sqrt(t);

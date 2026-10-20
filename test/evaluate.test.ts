@@ -477,6 +477,93 @@ test('Q-4: related quote cases are not misclassified', () => {
   assert.equal(evaluate(fields()).dataReliability.level, 'normal');
 });
 
+// ---- "IV poorly determined" explanation must match the actual cause (hypothetical inputs) --------
+
+const ivPoorlyDetermined = (ev: ReturnType<typeof evaluate>) => [...ev.warnings, ...ev.dataReliability.reasons].filter((m) => /poorly determined/i.test(m));
+
+test('IV-PD: deep in the money, the explanation cites intrinsic value and the flag is kept', () => {
+  const price = bsCall({ S: 100, K: 75, T: yearsBetween(NOW, expirationCloseUtc('2026-12-18')), r: 0.04, q: 0, sigma: 0.2 });
+  const ev = evaluate(fields({ Strike: '75', Bid: (price - 0.05).toFixed(2), Ask: (price + 0.05).toFixed(2) }));
+  const msgs = ivPoorlyDetermined(ev);
+  assert.equal(msgs.length, 2, 'one warning and one data-reliability reason');
+  for (const m of msgs) assert.match(m, /intrinsic value/i);
+  assert.equal(ev.dataReliability.level, 'reduced');
+});
+
+test('IV-PD: far out of the money, the explanation does not claim intrinsic value and the flag is kept', () => {
+  // 59-day call 40% out of the money, mid set to its 30%-vol model price.
+  const price = bsCall({ S: 100, K: 140, T: yearsBetween(NOW, expirationCloseUtc('2026-12-18')), r: 0.04, q: 0, sigma: 0.3 });
+  const ev = evaluate(fields({ Strike: '140', Bid: '0', Ask: (2 * price).toFixed(2), 'Historical volatility': '' }));
+  const msgs = ivPoorlyDetermined(ev);
+  assert.equal(msgs.length, 2, `flag must still fire: ${[...ev.warnings, ...ev.dataReliability.reasons].join(' | ')}`);
+  for (const m of msgs) {
+    assert.doesNotMatch(m, /almost (entirely|all) intrinsic/i);
+    assert.match(m, /out of the money/i);
+    assert.match(m, /no intrinsic value/i);
+  }
+  assert.equal(ev.dataReliability.level, 'reduced');
+});
+
+// ---- Precise intrinsic-share and sub-cent wording in the "poorly determined" explanation ----------
+// Hypothetical inputs. Each test asserts the generated messages (warning + reliability reason).
+
+/** Both poorly-determined messages; asserts the flag fired and reduced reliability. */
+function pdMessages(ev: ReturnType<typeof evaluate>): string[] {
+  const msgs = ivPoorlyDetermined(ev);
+  assert.equal(msgs.length, 2, `flag must fire once as a warning and once as a reliability reason: ${[...ev.warnings, ...ev.dataReliability.reasons].join(' | ')}`);
+  assert.equal(ev.dataReliability.level, 'reduced');
+  return msgs;
+}
+
+test('IV-PD wording: deep ITM with ~98% intrinsic value is reported as about 98%', () => {
+  const price = bsCall({ S: 100, K: 75, T: yearsBetween(NOW, expirationCloseUtc('2026-12-18')), r: 0.04, q: 0, sigma: 0.2 });
+  for (const m of pdMessages(evaluate(fields({ Strike: '75', Bid: (price - 0.05).toFixed(2), Ask: (price + 0.05).toFixed(2) })))) {
+    assert.match(m, /about 98% of its value is intrinsic value/);
+  }
+});
+
+test('IV-PD wording: an intrinsic share of 99.5%-100% is "more than 99%", never "about 100%"', () => {
+  // 3-day call $10 in the money, mid $10.04: intrinsic share ~99.6%.
+  for (const m of pdMessages(evaluate(fields({ Strike: '90', Expiration: '2026-10-23', Bid: '10.02', Ask: '10.06' })))) {
+    assert.match(m, /more than 99% of its value is intrinsic value/);
+    assert.doesNotMatch(m, /about 100%/);
+  }
+});
+
+test('IV-PD wording: a model value below intrinsic value is stated explicitly, with no percentage', () => {
+  // With a 6% dividend yield the European model can value a deep ITM call below stock minus strike.
+  const price = bsCall({ S: 100, K: 60, T: yearsBetween(NOW, expirationCloseUtc('2026-12-18')), r: 0.04, q: 0.06, sigma: 0.2 });
+  const ev = evaluate(fields({ Strike: '60', Bid: (price - 0.01).toFixed(2), Ask: (price + 0.01).toFixed(2), 'Dividend yield': '6%' }));
+  for (const m of pdMessages(ev)) {
+    // Distinguishes the model value (matched to the quote) from intrinsic value, with no percentage.
+    assert.match(m, /model value \(\$\d+\.\d{2}, matched to the quoted price\) is below its intrinsic value \(\$40\.00\)/);
+    assert.doesNotMatch(m, /% of its value is intrinsic value/);
+    // Names the model mechanism without presenting dividends as the only real-world explanation.
+    assert.match(m, /only because a dividend yield was entered/);
+    assert.match(m, /quote may also be stale or off-market/);
+  }
+});
+
+test('IV-PD wording: a far OTM option worth under one cent is not described as "about $0.01"', () => {
+  // Bid $0 / ask $0.01: mid (and model value) $0.005.
+  for (const m of pdMessages(evaluate(fields({ Strike: '140', Bid: '0', Ask: '0.01', 'Historical volatility': '' })))) {
+    assert.match(m, /worth less than \$0\.01 per share/);
+    assert.doesNotMatch(m, /about \$0\.01|under \$0\.01/);
+    assert.match(m, /no intrinsic value/);
+  }
+});
+
+test('IV-PD wording: a far OTM option worth at least one cent keeps a normal currency amount', () => {
+  // Same input as the far-OTM test above (mid = 30%-vol model price, about $0.015), where the
+  // flag is known to fire. A $0.02 mid would not do: its higher IV lifts vega above the threshold.
+  const price = bsCall({ S: 100, K: 140, T: yearsBetween(NOW, expirationCloseUtc('2026-12-18')), r: 0.04, q: 0, sigma: 0.3 });
+  assert.ok(price >= 0.01, `fixture must be worth at least one cent, got ${price}`);
+  for (const m of pdMessages(evaluate(fields({ Strike: '140', Bid: '0', Ask: (2 * price).toFixed(2), 'Historical volatility': '' })))) {
+    assert.match(m, /worth only about \$0\.0[1-9] per share/);
+    assert.doesNotMatch(m, /less than \$0\.01/);
+  }
+});
+
 test('the what-if table shows a loss when the stock is flat (time decay)', () => {
   const ev = evaluate(liquidAtmCall());
   const w = ev.whatIf!;
