@@ -282,6 +282,34 @@ test('--json: DEL and C1 control characters are escaped in stdout, and values pa
   assert.equal(parsed.movers[0].asset.symbol, 'X\u009bY', 'original (normalized) symbol preserved');
 });
 
+test('S6: a second live run on the same UTC day reuses cached histories from the local cache directory', async () => {
+  const { mkdtempSync, rmSync, readdirSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'scan-cache-test-'));
+  try {
+    const env = { COINGECKO_DEMO_API_KEY: KEY, LOCALAPPDATA: dir };
+    const first = liveFetch();
+    const one = deps({ env, fetch: first.fn });
+    assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2'], one.d), 0, one.err.join('\n'));
+    assert.equal(first.urls.length, 2); // markets + history
+    const files = readdirSync(join(dir, 'market-scanner', 'coingecko-history'));
+    assert.equal(files.length, 1);
+    assert.ok(!files[0]!.includes('syn-live'), 'file names never contain provider ids');
+
+    const second = liveFetch();
+    const two = deps({ env, fetch: second.fn });
+    assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2', '--json'], two.d), 0, two.err.join('\n'));
+    assert.equal(second.urls.length, 1); // markets only
+    const result = JSON.parse(two.out.join('\n'));
+    assert.deepEqual([result.dataset.coverage.historyFetched, result.dataset.coverage.historyFromCache, result.dataset.coverage.requestsUsed], [1, 1, 1]);
+    assert.deepEqual(result.movers.map((c: { asset: { id: string } }) => c.asset.id), ['syn-live']);
+    for (const s of [one.out.join(''), one.err.join(''), two.out.join(''), two.err.join('')]) assert.ok(!s.includes(KEY));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('partial coverage: a capped live run reports coverage in JSON and text, and still exits 0', async () => {
   // SYNTHETIC: two eligible coins that match no pattern (flat price, volume at its median); a cap
   // of 2 leaves room for the markets request and one history request only.
@@ -299,7 +327,7 @@ test('partial coverage: a capped live run reports coverage in JSON and text, and
   assert.equal(urls.length, 2);
   const result = JSON.parse(json.out.join('\n'));
   assert.deepEqual(result.dataset.coverage, {
-    historyEligible: 2, historyFetched: 1, historyRequestFailed: 0, historyNotRequested: 1, complete: false,
+    historyEligible: 2, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 0, historyNotRequested: 1, complete: false,
     stopReason: 'the per-run limit of 2 requests was reached', requestsUsed: 2, requestLimit: 2,
   });
   assert.deepEqual(result.excluded.map((e: { id: string; reasons: { code: string }[] }) => [e.id, e.reasons.map((r) => r.code)]), [['syn-two', ['history_not_requested']]]);

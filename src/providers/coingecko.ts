@@ -27,6 +27,7 @@ import { computeMetrics, exclusionReasons } from '../scanner/analyze.ts';
 import { normalizeDataset } from '../scanner/normalize.ts';
 import { SCAN_RULES, type ScanRules } from '../scanner/rules.ts';
 import type { HistoryCoverage, HistoryStatus, RawAsset } from '../scanner/types.ts';
+import type { HistoryCache } from './history-cache.ts';
 import { type HttpClient, HttpError } from './http.ts';
 
 export const COINGECKO_DEMO_BASE_URL = 'https://api.coingecko.com/api/v3';
@@ -196,6 +197,8 @@ export interface LiveFetchOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Collect timestamp-only diagnostics for each history request that was sent. */
   diagnostics?: boolean;
+  /** S6: reuse fresh histories from this cache instead of requesting them; store new ones. */
+  historyCache?: HistoryCache;
 }
 
 /** A live dataset ready for normalizeDataset, plus counts for the caller. */
@@ -260,44 +263,59 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   const odd = { invalid: 0, priorIntraday: 0, todayMidnight: 0, todayAfterMidnight: 0, future: 0, conflicts: 0, gaps: 0, missingRecent: 0 };
   const diagnostics: HistoryDiagnostic[] | undefined = options.diagnostics ? [] : undefined;
   let stopReason: string | null = null;
+  const cache = options.historyCache;
+  const historyDays = Math.max(HISTORY_REQUEST_DAYS, rules.historyWindowDays + 5);
+  let fromCache = 0;
+  let cacheWriteFailures = 0;
   for (const id of eligible) {
-    if (stopReason !== null || client.callsMade >= maxCalls) {
-      stopReason ??= `the per-run limit of ${maxCalls} requests was reached`;
-      notRequested.push(id);
-      continue;
-    }
-    await sleep(minIntervalMs);
+    // A fresh cached history costs no request, so it is used even after the request limit is reached.
+    const cached = cache?.get(id, historyDays, fetchedAt) ?? null;
     let json: unknown;
-    try {
-      json = await client.getJson(`/coins/${encodeURIComponent(id)}/market_chart`, {
-        // No `interval`: documented auto-granularity gives daily 00:00 UTC points above 90 days.
-        vs_currency: 'usd', days: String(Math.max(HISTORY_REQUEST_DAYS, rules.historyWindowDays + 5)),
-      });
-    } catch (err) {
-      if (!(err instanceof HttpError)) throw err;
-      if (err.kind === 'budget' && !err.requestSent) {
-        // Never sent, so there is nothing to diagnose.
-        stopReason = `the per-run limit of ${maxCalls} requests was reached`;
+    if (cached !== null) {
+      json = { total_volumes: cached.totalVolumes };
+    } else {
+      if (stopReason !== null || client.callsMade >= maxCalls) {
+        stopReason ??= `the per-run limit of ${maxCalls} requests was reached`;
         notRequested.push(id);
         continue;
       }
-      // From here the request WAS sent: it is reported as attempted and failed.
-      diagnostics?.push({ id, outcome: `request failed (${failureOutcome(err)})` });
-      if (err.kind === 'rate_limited' || err.kind === 'budget') {
-        // Stop: the provider is rate-limiting, or a 429 retry no longer fits the request limit.
-        stopReason = err.kind === 'rate_limited' ? 'the provider rate-limited the run' : `the per-run limit of ${maxCalls} requests was reached`;
-        failed.push(id);
-      } else {
-        failed.push(id);
+      await sleep(minIntervalMs);
+      try {
+        json = await client.getJson(`/coins/${encodeURIComponent(id)}/market_chart`, {
+          // No `interval`: documented auto-granularity gives daily 00:00 UTC points above 90 days.
+          vs_currency: 'usd', days: String(historyDays),
+        });
+      } catch (err) {
+        if (!(err instanceof HttpError)) throw err;
+        if (err.kind === 'budget' && !err.requestSent) {
+          // Never sent, so there is nothing to diagnose.
+          stopReason = `the per-run limit of ${maxCalls} requests was reached`;
+          notRequested.push(id);
+          continue;
+        }
+        // From here the request WAS sent: it is reported as attempted and failed.
+        diagnostics?.push({ id, outcome: `request failed (${failureOutcome(err)})` });
+        if (err.kind === 'rate_limited' || err.kind === 'budget') {
+          // Stop: the provider is rate-limiting, or a 429 retry no longer fits the request limit.
+          stopReason = err.kind === 'rate_limited' ? 'the provider rate-limited the run' : `the per-run limit of ${maxCalls} requests was reached`;
+          failed.push(id);
+        } else {
+          failed.push(id);
+        }
+        continue;
       }
-      continue;
     }
     const described = diagnostics ? describeHistory(json, fetchedAt) : null;
     try {
       const { volumes, stats } = parseDailyVolumes(json, fetchedAt);
       history.set(id, volumes);
       for (const k of Object.keys(odd) as (keyof typeof odd)[]) odd[k] += stats[k];
-      diagnostics?.push({ id, outcome: 'parsed', history: described! });
+      if (cached !== null) {
+        fromCache++;
+      } else if (cache && !cache.set(id, historyDays, clock(), (json as { total_volumes: unknown[] }).total_volumes)) {
+        cacheWriteFailures++;
+      }
+      diagnostics?.push({ id, outcome: cached !== null ? `parsed (from cache, fetched ${cached.fetchedAt})` : 'parsed', history: described! });
     } catch (err) {
       if (!(err instanceof ProviderResponseError)) throw err;
       failed.push(id);
@@ -316,6 +334,7 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   const coverage: HistoryCoverage = {
     historyEligible: eligible.length,
     historyFetched: history.size,
+    historyFromCache: fromCache,
     historyRequestFailed: failed.length,
     historyNotRequested: notRequested.length,
     complete: failed.length === 0 && notRequested.length === 0,
@@ -327,6 +346,8 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
     `${assets.length} assets from /coins/markets; ${client.callsMade} of ${maxCalls} allowed requests used.`,
     `Volume history fetched for ${history.size} of ${eligible.length} assets that passed the non-history filters; ${skippedByFilters} assets were already excluded by those filters and their history was not requested.`,
   ];
+  if (fromCache > 0) notes.push(`Volume history for ${fromCache} of those asset(s) was reused from the local cache (fetched earlier this UTC day; completed days only), so no request was made for it.`);
+  if (cacheWriteFailures > 0) notes.push(`${cacheWriteFailures} fetched history response(s) could not be written to the local cache; they will be requested again next run.`);
   if (failed.length > 0) notes.push(`History request failed for ${failed.length} asset(s) (${idList(failed)}); they are excluded as history request failed and were not evaluated.`);
   if (notRequested.length > 0) notes.push(`History not requested for ${notRequested.length} asset(s) (${idList(notRequested)}) because ${stopReason}; they are excluded as history not requested and were not evaluated.`);
   const today = odd.todayMidnight + odd.todayAfterMidnight;

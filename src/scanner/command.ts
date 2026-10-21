@@ -10,6 +10,7 @@ import {
   fetchLiveDataset,
   terminalSafe,
 } from '../providers/coingecko.ts';
+import { createFileHistoryCache, historyCacheDir } from '../providers/history-cache.ts';
 import { type FetchLike, createHttpClient } from '../providers/http.ts';
 import { runScan } from './analyze.ts';
 import { normalizeDataset } from './normalize.ts';
@@ -143,8 +144,11 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
       const client = createHttpClient({
         fetch: deps.fetch, baseUrl: COINGECKO_DEMO_BASE_URL, apiKeyHeader: COINGECKO_KEY_HEADER, apiKey, maxCalls: maxRequests, sleep: deps.sleep,
       });
+      // S6: histories fetched earlier this UTC day are reused from a local cache outside the project folder.
+      const cacheDir = historyCacheDir(deps.env);
       const { diagnostics, ...data } = await fetchLiveDataset({
         client, clock: deps.clock, sleep: deps.sleep, maxCalls: maxRequests, diagnostics: values['history-diagnostics'],
+        historyCache: cacheDir !== null ? createFileHistoryCache(cacheDir) : undefined,
       });
       // Diagnostics go to stderr so that --json output on stdout stays parseable.
       if (diagnostics) deps.err(renderHistoryDiagnostics(diagnostics));

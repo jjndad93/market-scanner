@@ -547,7 +547,7 @@ test('S1: a live report shows attribution and verified labels, and never the TES
 
 /** Partial coverage for 3 eligible assets: 1 fetched, 1 failed, 1 not requested. */
 const COVERAGE = {
-  historyEligible: 3, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 1, complete: false,
+  historyEligible: 3, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 1, historyNotRequested: 1, complete: false,
   stopReason: 'the per-run limit of 3 requests was reached', requestsUsed: 3, requestLimit: 3,
 };
 const failedAsset = (id: string) => asset({ id, dailyVolumes: null, historyStatus: 'request_failed' });
@@ -613,7 +613,7 @@ test('coverage: partial with candidates - the results are labeled as covering on
 });
 
 test('coverage: complete coverage keeps the plain conclusion and says so', () => {
-  const coverage = { historyEligible: 1, historyFetched: 1, historyRequestFailed: 0, historyNotRequested: 0, complete: true, stopReason: null, requestsUsed: 2, requestLimit: 160 };
+  const coverage = { historyEligible: 1, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 0, historyNotRequested: 0, complete: true, stopReason: null, requestsUsed: 2, requestLimit: 160 };
   const report = renderScanReport(liveScan([asset({ id: 'f' })], coverage));
   assert.ok(report.includes('\nHistory coverage: fetched for 1 of 1 assets that passed the non-history filters. Complete.\n'), report);
   assert.ok(report.includes('\nNo candidates met the evidence threshold.\n'), report);

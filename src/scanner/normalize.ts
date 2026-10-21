@@ -98,7 +98,7 @@ export function normalizeDataset(input: unknown, rules: ScanRules = SCAN_RULES):
   return { dataset, assets, invalid, historyWindowDays: rules.historyWindowDays };
 }
 
-const COVERAGE_COUNTS = ['historyEligible', 'historyFetched', 'historyRequestFailed', 'historyNotRequested', 'requestsUsed', 'requestLimit'] as const;
+const COVERAGE_COUNTS = ['historyEligible', 'historyFetched', 'historyFromCache', 'historyRequestFailed', 'historyNotRequested', 'requestsUsed', 'requestLimit'] as const;
 
 /** Checks that live history coverage is internally consistent; throws a dataset error otherwise. */
 function validateCoverage(v: unknown): HistoryCoverage {
@@ -120,11 +120,12 @@ function validateCoverage(v: unknown): HistoryCoverage {
   if (n.historyNotRequested > 0 ? !isText(v.stopReason) : v.stopReason !== null) {
     bad('stopReason must be text when assets were not requested, and null otherwise');
   }
+  if (n.historyFromCache > n.historyFetched) bad('historyFromCache exceeds historyFetched');
   if (n.requestsUsed > n.requestLimit) bad('requestsUsed exceeds requestLimit');
-  // The markets request plus at least one request per history request that was sent.
-  if (n.requestsUsed < 1 + n.historyFetched + n.historyRequestFailed) bad('requestsUsed is lower than the requests the counts imply');
+  // The markets request plus at least one request per history request that was sent (cached histories cost none).
+  if (n.requestsUsed < 1 + n.historyFetched - n.historyFromCache + n.historyRequestFailed) bad('requestsUsed is lower than the requests the counts imply');
   return {
-    historyEligible: n.historyEligible, historyFetched: n.historyFetched, historyRequestFailed: n.historyRequestFailed,
+    historyEligible: n.historyEligible, historyFetched: n.historyFetched, historyFromCache: n.historyFromCache, historyRequestFailed: n.historyRequestFailed,
     historyNotRequested: n.historyNotRequested, complete: v.complete as boolean, stopReason: v.stopReason as string | null,
     requestsUsed: n.requestsUsed, requestLimit: n.requestLimit,
   };

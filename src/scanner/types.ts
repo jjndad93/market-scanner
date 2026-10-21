@@ -43,6 +43,8 @@ export interface HistoryCoverage {
   historyEligible: number;
   /** History obtained and parsed (it may still fail the history-sufficiency rules). */
   historyFetched: number;
+  /** Of historyFetched: reused from the local history cache (no request made). */
+  historyFromCache: number;
   /** Request sent but failed, or the response had no usable volume data. */
   historyRequestFailed: number;
   /** Never requested because the run stopped (request limit or rate limit). */

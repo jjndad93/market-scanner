@@ -120,7 +120,8 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
     const status = partial
       ? `; ${cov.historyRequestFailed} failed; ${cov.historyNotRequested} not requested${cov.stopReason !== null ? ` (${cov.stopReason})` : ''}. PARTIAL SCAN.`
       : '. Complete.';
-    out.push(...wrap(`History coverage: fetched for ${cov.historyFetched} of ${cov.historyEligible} assets that passed the non-history filters${status}`, '  ', ''));
+    const cached = cov.historyFromCache > 0 ? ` (${cov.historyFromCache} reused from this UTC day's local cache)` : '';
+    out.push(...wrap(`History coverage: fetched for ${cov.historyFetched} of ${cov.historyEligible} assets that passed the non-history filters${cached}${status}`, '  ', ''));
   }
   const assetCount = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
   const wasWere = (n: number) => (n === 1 ? 'was' : 'were');

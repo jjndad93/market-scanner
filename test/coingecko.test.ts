@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DAY_MS } from '../src/core/time.ts';
 import { COINGECKO_ATTRIBUTION, ProviderResponseError, classifyPoint, describeHistory, fetchLiveDataset, parseDailyVolumes, parseMarkets } from '../src/providers/coingecko.ts';
+import { type HistoryCache, isFreshHistory } from '../src/providers/history-cache.ts';
 import { type FetchLike, createHttpClient } from '../src/providers/http.ts';
 import { runScan } from '../src/scanner/analyze.ts';
 import { normalizeDataset } from '../src/scanner/normalize.ts';
@@ -140,7 +141,7 @@ test('a live run requests history only for assets that pass the non-history filt
   assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons[0]!.code]), [['syn-small', 'below_market_cap'], ['tether', 'stablecoin']]);
   // Complete coverage: the one eligible asset's history was fetched.
   assert.deepEqual(data.dataset.coverage, {
-    historyEligible: 1, historyFetched: 1, historyRequestFailed: 0, historyNotRequested: 0, complete: true, stopReason: null, requestsUsed: 2, requestLimit: 160,
+    historyEligible: 1, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 0, historyNotRequested: 0, complete: true, stopReason: null, requestsUsed: 2, requestLimit: 160,
   });
   assert.ok(data.assets.every((a) => !('historyStatus' in a)));
 });
@@ -163,7 +164,7 @@ test('a failed history request leaves that asset without history; nothing is inv
   assert.deepEqual(r.excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]), [['syn-a', ['history_request_failed']]]);
   assert.ok(data.dataset.notes.some((n) => /History request failed for 1 asset\(s\) \(syn-a\)/.test(n)), data.dataset.notes.join(' | '));
   assert.deepEqual(data.dataset.coverage, {
-    historyEligible: 2, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 0, complete: false, stopReason: null, requestsUsed: 3, requestLimit: 160,
+    historyEligible: 2, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 1, historyNotRequested: 0, complete: false, stopReason: null, requestsUsed: 3, requestLimit: 160,
   });
   assertCoverageAddsUp(data);
 });
@@ -199,7 +200,7 @@ test('a rate limit on history stops further history requests and is reported', a
   const codes = Object.fromEntries(scan(data).excluded.map((e) => [e.id, e.reasons.map((x) => x.code)]));
   assert.deepEqual([codes['syn-b'], codes['syn-c']], [['history_request_failed'], ['history_not_requested']]);
   assert.deepEqual(data.dataset.coverage, {
-    historyEligible: 3, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 1, complete: false, stopReason: 'the provider rate-limited the run', requestsUsed: 3, requestLimit: 160,
+    historyEligible: 3, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 1, historyNotRequested: 1, complete: false, stopReason: 'the provider rate-limited the run', requestsUsed: 3, requestLimit: 160,
   });
   assertCoverageAddsUp(data);
 });
@@ -208,7 +209,7 @@ test('a rate limit on the last eligible asset leaves nothing unrequested, so sto
   const markets = ['a', 'b'].map((x) => coin({ id: `syn-${x}`, symbol: `s${x}` }));
   const { data } = await live(markets, (id) => (id === 'syn-a' ? { status: 200, body: chart(20e6) } : { status: 429 }));
   assert.deepEqual(data.dataset.coverage, {
-    historyEligible: 2, historyFetched: 1, historyRequestFailed: 1, historyNotRequested: 0, complete: false, stopReason: null, requestsUsed: 3, requestLimit: 160,
+    historyEligible: 2, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 1, historyNotRequested: 0, complete: false, stopReason: null, requestsUsed: 3, requestLimit: 160,
   });
   assertCoverageAddsUp(data);
   scan(data); // the normalizer accepts it
@@ -225,7 +226,7 @@ test('the per-run request cap is enforced and reported', async () => {
     ['syn-c', ['history_not_requested']], ['syn-d', ['history_not_requested']], ['syn-e', ['history_not_requested']],
   ]);
   assert.deepEqual(data.dataset.coverage, {
-    historyEligible: 5, historyFetched: 2, historyRequestFailed: 0, historyNotRequested: 3, complete: false,
+    historyEligible: 5, historyFetched: 2, historyFromCache: 0, historyRequestFailed: 0, historyNotRequested: 3, complete: false,
     stopReason: 'the per-run limit of 3 requests was reached', requestsUsed: 3, requestLimit: 3,
   });
   assertCoverageAddsUp(data);
@@ -233,6 +234,90 @@ test('the per-run request cap is enforced and reported', async () => {
   assert.ok(report.includes('History coverage: fetched for 2 of 5 assets that passed the non-history filters; 0 failed; 3 not requested (the per-run limit of 3 requests was reached). PARTIAL SCAN.'), report);
   assert.ok(report.includes('PARTIAL SCAN: these results cover only the 2 of 5 eligible assets whose history was fetched; 3 were not evaluated.'), report);
   assert.ok(report.includes('history not requested (request/rate limit): SC, SD, SE'), report);
+});
+
+// ---- S6: history cache (in-memory stand-in for the file cache; freshness is the real rule) ------
+
+function memoryCache(seed: Record<string, { fetchedAt: string; totalVolumes: unknown[] }> = {}) {
+  const store = new Map(Object.entries(seed));
+  const writes: string[] = [];
+  const cache: HistoryCache = {
+    get: (id, days, now) => {
+      const e = store.get(`${id}|${days}`);
+      return e && isFreshHistory(new Date(e.fetchedAt), now) ? e : null;
+    },
+    set: (id, days, fetchedAt, totalVolumes) => {
+      writes.push(id);
+      store.set(`${id}|${days}`, { fetchedAt: fetchedAt.toISOString(), totalVolumes });
+      return true;
+    },
+  };
+  return { cache, writes };
+}
+async function liveCached(markets: unknown, history: (id: string) => Route, cache: HistoryCache, maxCalls = 160) {
+  const r = router((url) => (url.includes('/coins/markets') ? { status: 200, body: markets } : history(decodeURIComponent(/\/coins\/([^/]+)\/market_chart/.exec(url)![1]!))));
+  const client = createHttpClient({ fetch: r.fn, baseUrl: 'https://api.example.test/api/v3', apiKeyHeader: 'x-cg-demo-api-key', apiKey: KEY, maxCalls, sleep: async () => {} });
+  const data = await fetchLiveDataset({ client, clock: () => NOW, maxCalls, sleep: async () => {}, historyCache: cache });
+  return { data, urls: r.urls };
+}
+
+test('S6: a miss is fetched and stored; a same-day rerun reuses it with no history request and identical results', async () => {
+  const markets = [coin({ id: 'syn-a' }), coin({ id: 'syn-b', symbol: 'sb' })];
+  const { cache, writes } = memoryCache();
+  const first = await liveCached(markets, () => ({ status: 200, body: chart(20e6) }), cache);
+  assert.equal(historyCalls(first.urls).length, 2);
+  assert.deepEqual(writes, ['syn-a', 'syn-b']);
+  assert.equal(first.data.dataset.coverage.historyFromCache, 0);
+
+  const second = await liveCached(markets, () => {
+    throw new Error('history must come from the cache');
+  }, cache);
+  assert.deepEqual(second.urls.map((u) => u.includes('/coins/markets')), [true]); // only the markets request
+  assert.deepEqual(second.data.dataset.coverage, {
+    historyEligible: 2, historyFetched: 2, historyFromCache: 2, historyRequestFailed: 0, historyNotRequested: 0, complete: true, stopReason: null, requestsUsed: 1, requestLimit: 160,
+  });
+  assert.deepEqual(second.data.assets.map((a) => a.dailyVolumes), first.data.assets.map((a) => a.dailyVolumes));
+  assert.deepEqual(JSON.stringify(scan(second.data).movers), JSON.stringify(scan(first.data).movers));
+  assert.ok(second.data.dataset.notes.some((n) => n.includes('Volume history for 2 of those asset(s) was reused from the local cache')), second.data.dataset.notes.join(' | '));
+  const report = renderScanReport(scan(second.data)).replace(/\s+/g, ' ');
+  assert.ok(report.includes("History coverage: fetched for 2 of 2 assets that passed the non-history filters (2 reused from this UTC day's local cache). Complete."), report);
+});
+
+test('S6: cached histories cost no request and are still used after the request limit is reached', async () => {
+  // Limit 2 = markets + one history request. syn-a is requested, syn-b is cached, the limit is then
+  // reached so syn-c (uncached) is not requested, and syn-d (cached) is still used afterwards.
+  const markets = ['a', 'b', 'c', 'd'].map((x) => coin({ id: `syn-${x}`, symbol: `s${x}` }));
+  const fresh = { fetchedAt: '2026-10-21T08:00:00.000Z', totalVolumes: chart(20e6).total_volumes };
+  const { cache } = memoryCache({ 'syn-b|91': fresh, 'syn-d|91': fresh });
+  const { data, urls } = await liveCached(markets, () => ({ status: 200, body: chart(20e6) }), cache, 2);
+  assert.deepEqual(historyCalls(urls).map((u) => /coins\/([^/]+)\//.exec(u)![1]), ['syn-a']);
+  assert.deepEqual(data.dataset.coverage, {
+    historyEligible: 4, historyFetched: 3, historyFromCache: 2, historyRequestFailed: 0, historyNotRequested: 1, complete: false,
+    stopReason: 'the per-run limit of 2 requests was reached', requestsUsed: 2, requestLimit: 2,
+  });
+  assert.deepEqual(data.assets.filter((a) => a.historyStatus === 'not_requested').map((a) => a.id), ['syn-c']);
+  assert.equal(data.assets.find((a) => a.id === 'syn-d')!.dailyVolumes!.length, 91);
+  scan(data); // the normalizer accepts the coverage
+});
+
+test('S6: failed requests and malformed bodies are never cached; stale entries are requested again', async () => {
+  const markets = [coin({ id: 'syn-fail' }), coin({ id: 'syn-bad', symbol: 'sbd' }), coin({ id: 'syn-old', symbol: 'sol' })];
+  const yesterday = { fetchedAt: '2026-10-20T18:00:00.000Z', totalVolumes: chart(5e6).total_volumes };
+  const { cache, writes } = memoryCache({ 'syn-old|91': yesterday });
+  const { data, urls } = await liveCached(markets, (id) =>
+    id === 'syn-fail' ? { status: 500 } : id === 'syn-bad' ? { status: 200, body: { prices: [] } } : { status: 200, body: chart(20e6) }, cache);
+  assert.equal(historyCalls(urls).length, 3); // the stale entry was not used
+  assert.deepEqual(writes, ['syn-old']); // only the successful response was stored
+  assert.deepEqual([data.dataset.coverage.historyFromCache, data.dataset.coverage.historyRequestFailed], [0, 2]);
+  const old = data.assets.find((a) => a.id === 'syn-old')!;
+  assert.equal(old.dailyVolumes!.at(-1), Math.round(20e6 * 0.95)); // today's fetch (the stale entry's would be 4.75M)
+});
+
+test('S6: a cache write failure is reported and does not affect the scan', async () => {
+  const cache: HistoryCache = { get: () => null, set: () => false };
+  const { data } = await liveCached([coin({ id: 'syn-a' })], () => ({ status: 200, body: chart(20e6) }), cache);
+  assert.equal(scan(data).movers.length, 1);
+  assert.ok(data.dataset.notes.some((n) => n.includes('1 fetched history response(s) could not be written to the local cache')), data.dataset.notes.join(' | '));
 });
 
 test('a failed or malformed markets response produces no dataset', async () => {

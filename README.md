@@ -221,7 +221,16 @@ first, duplicates collapsed; conflicting duplicates, missing days and missing re
 counted as unusable) and every live report says the meaning is not yet verified. This must be confirmed
 with a separately approved live check (S7) before live results are relied on.
 
-Not done yet: a history cache (S6), pending approval.
+**History cache (S6).** Successfully parsed `/market_chart` volume histories are stored in a local
+cache outside this OneDrive-synced folder (`%LOCALAPPDATA%\market-scanner\coingecko-history` on
+Windows; `$XDG_CACHE_HOME` or `~/.cache` elsewhere; no cache if none is known), one JSON file per
+asset named by a hash of its id. A cached history is reused only during the UTC day it was fetched,
+and only if it was fetched at least 15 minutes after 00:00 UTC; otherwise it is requested again.
+Since the scanner uses only completed UTC days, a same-day entry holds the same days as a new
+request. Failed requests and malformed responses are never cached, and a corrupt or mismatched
+entry is ignored. Reused histories cost no request, so later runs on the same day cover more
+assets within `--max-requests`; the report's coverage line, a DATA NOTES line and
+`dataset.coverage.historyFromCache` say how many were reused. Delete the folder to clear it.
 
 ## Tests
 
