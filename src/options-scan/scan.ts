@@ -79,11 +79,13 @@ export interface OptionScanResult {
   insufficient: { ticker: string; reasons: string[] }[];
   putsNotEvaluated: string[];
   /** Exclusions grouped by first reason, with counts and examples. */
-  exclusions: { code: OptionExclusionCode; count: number; examples: string[] }[];
+  exclusions: { code: OptionExclusionCode; count: number; examples: string[]; /** First-reason detail for each example (Stage 7, additive). */ details: string[] }[];
 }
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-const isIsoDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
+// An impossible date such as 2026-13-01 is invalid, not a crash: check the parse before toISOString.
+const isIsoDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+  && Number.isFinite(Date.parse(`${v}T00:00:00Z`)) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 
 /** Validates one raw contract; returns the contract, or the first reason it cannot be used. */
 export function validateContract(r: RawOptionContract, now: Date, rules = OPTION_SCAN_RULES): { contract: OptionContract | null; reasons: { code: OptionExclusionCode; detail: string }[] } {
@@ -92,11 +94,18 @@ export function validateContract(r: RawOptionContract, now: Date, rules = OPTION
   const type = r.type === 'call' || r.type === 'put' ? r.type : null;
   const ticker = typeof r.ticker === 'string' && r.ticker !== '' ? r.ticker : null;
   const underlying = typeof r.underlying === 'string' && r.underlying !== '' ? r.underlying : null;
-  const missingParts = [
-    ticker === null && 'contract ticker', underlying === null && 'underlying', type === null && 'call/put type',
-    (strike === null || strike <= 0) && 'strike', !isIsoDate(r.expiration) && 'expiration', (price === null || price <= 0) && 'underlying price',
-  ].filter(Boolean);
-  if (missingParts.length > 0) return { contract: null, reasons: [{ code: 'incomplete', detail: `missing or invalid: ${missingParts.join(', ')}` }] };
+  // A field the provider omitted is "missing"; one it sent in an unusable form is "invalid".
+  const absent = (v: unknown) => v === undefined || v === null || v === '';
+  const problems: [string, unknown, boolean][] = [
+    ['contract ticker', r.ticker, ticker !== null], ['underlying', r.underlying, underlying !== null], ['call/put type', r.type, type !== null],
+    ['strike', r.strike, strike !== null && strike > 0], ['expiration', r.expiration, isIsoDate(r.expiration)], ['underlying price', r.underlyingPrice, price !== null && price > 0],
+  ];
+  const missingParts = problems.filter(([, v, ok]) => !ok && absent(v)).map(([n]) => n);
+  const invalidParts = problems.filter(([, v, ok]) => !ok && !absent(v)).map(([n, v]) => `${n} (${JSON.stringify(v)})`);
+  if (missingParts.length + invalidParts.length > 0) {
+    const detail = [missingParts.length > 0 && `missing: ${missingParts.join(', ')}`, invalidParts.length > 0 && `invalid: ${invalidParts.join(', ')}`].filter(Boolean).join('; ');
+    return { contract: null, reasons: [{ code: 'incomplete', detail }] };
+  }
 
   const today = nyDateString(now);
   const expiration = r.expiration as string;
@@ -180,11 +189,14 @@ const byRule = (x: RankedCandidate, y: RankedCandidate) =>
   || (x.contract.ticker < y.contract.ticker ? -1 : x.contract.ticker > y.contract.ticker ? 1 : 0);
 
 export function runOptionScan(data: OptionScanDataset, now: Date, rules = OPTION_SCAN_RULES): OptionScanResult {
-  const exclusions = new Map<OptionExclusionCode, { count: number; examples: string[] }>();
-  const exclude = (label: string, code: OptionExclusionCode) => {
-    const e = exclusions.get(code) ?? { count: 0, examples: [] };
+  const exclusions = new Map<OptionExclusionCode, { count: number; examples: string[]; details: string[] }>();
+  const exclude = (label: string, code: OptionExclusionCode, detail: string) => {
+    const e = exclusions.get(code) ?? { count: 0, examples: [], details: [] };
     e.count++;
-    if (e.examples.length < 3) e.examples.push(label);
+    if (e.examples.length < 3) {
+      e.examples.push(label);
+      e.details.push(detail);
+    }
     exclusions.set(code, e);
   };
   const failed: string[] = [];
@@ -208,7 +220,7 @@ export function runOptionScan(data: OptionScanDataset, now: Date, rules = OPTION
       retrieved++;
       const { contract, reasons } = validateContract(raw, now, rules);
       const label = contract?.ticker ?? (typeof raw.ticker === 'string' ? raw.ticker : `(unlabeled ${chain.underlying} contract)`);
-      if (reasons.length > 0 || contract === null) { exclude(label, reasons[0]!.code); continue; }
+      if (reasons.length > 0 || contract === null) { exclude(label, reasons[0]!.code, reasons[0]!.detail); continue; }
       if (contract.type === 'put') putsNotEvaluated.push(contract.ticker);
       else eligibleCalls.push(contract);
     }

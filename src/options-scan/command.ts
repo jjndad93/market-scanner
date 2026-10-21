@@ -6,7 +6,7 @@ import { fetchOptionChains } from '../providers/massive-options.ts';
 import type { ScanCommandDeps } from '../scanner/command.ts';
 import { parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
 import { STOCK_UNIVERSE } from '../stocks/rules.ts';
-import { renderOptionScanReport } from './render.ts';
+import { renderOptionScanReport, summarizeOptionScan } from './render.ts';
 import { type OptionScanDataset, runOptionScan } from './scan.ts';
 
 export const OPTION_SCAN_HELP = `Usage:
@@ -63,7 +63,7 @@ export async function runOptionScanCommand(args: string[], deps: ScanCommandDeps
 
   const emit = (data: OptionScanDataset, now: Date) => {
     const result = runOptionScan(data, now);
-    deps.out(values.json ? terminalSafeJson(JSON.stringify(result, null, 2)) : renderOptionScanReport(result));
+    deps.out(values.json ? terminalSafeJson(JSON.stringify({ ...result, scan: summarizeOptionScan(result) }, null, 2)) : renderOptionScanReport(result));
     return 0;
   };
 

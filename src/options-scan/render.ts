@@ -1,4 +1,5 @@
 import { money, terminalSafe } from '../core/format.ts';
+import { renderSummary, type ScanSummary } from '../core/summary.ts';
 import { formatNy } from '../core/time.ts';
 import { wrap } from '../scanner/render.ts';
 import { OPTION_SCAN_RULES, type OptionExclusionCode, type OptionScanResult, type RankedCandidate } from './scan.ts';
@@ -32,6 +33,38 @@ function renderCandidate(c: RankedCandidate, tag: string): string[] {
   ];
 }
 
+/** Stage 7 summary, built only from what the scan result holds. */
+export function summarizeOptionScan(r: OptionScanResult): ScanSummary {
+  const live = r.dataset.kind === 'live';
+  const u = r.underlyings;
+  const total = u.scanned + u.failed.length + u.notRequested.length;
+  const partialReasons: string[] = [];
+  if (u.notRequested.length > 0) partialReasons.push(`${u.notRequested.length} underlying(s) not requested (${u.notRequested.slice(0, 5).join(', ')}${u.notRequested.length > 5 ? ', ...' : ''})`);
+  if (u.failed.length > 0) partialReasons.push(`${u.failed.length} underlying(s) failed or returned unusable data (${u.failed.slice(0, 5).join(', ')}${u.failed.length > 5 ? ', ...' : ''})`);
+  if (u.truncated.length > 0) partialReasons.push(`only the first page of contracts was used for ${u.truncated.join(', ')}`);
+  const c = r.counts;
+  return {
+    scanType: 'options',
+    scannedAt: r.evaluatedAt,
+    mode: live ? 'live' : 'offline',
+    data: live ? 'live Massive option-chain snapshot' : 'synthetic fixture (TEST DATA), not market data',
+    source: r.dataset.source,
+    scope: `${total} underlying(s), ${u.scanned} scanned; ${c.retrieved} contract(s) retrieved`,
+    status: partialReasons.length > 0 ? 'partial' : 'complete',
+    partialReasons,
+    counts: {
+      underlyings: total, underlyingsScanned: u.scanned, underlyingsFailed: u.failed.length, underlyingsNotRequested: u.notRequested.length,
+      retrieved: c.retrieved, excluded: c.excluded, eligible: c.eligible, evaluated: c.evaluated, ranked: c.ranked, insufficient: c.insufficient, putsNotEvaluated: c.putsNotEvaluated,
+    },
+    qualified: c.ranked,
+    notQualified: [
+      ...r.exclusions.map((e) => ({ reason: `excluded: ${EXCLUSION_LABEL[e.code]}`, count: e.count })),
+      ...(c.insufficient > 0 ? [{ reason: 'evaluated but insufficient data (not ranked)', count: c.insufficient }] : []),
+      ...(c.putsNotEvaluated > 0 ? [{ reason: 'eligible puts not evaluated (calls only)', count: c.putsNotEvaluated }] : []),
+    ],
+  };
+}
+
 export function renderOptionScanReport(r: OptionScanResult): string {
   const out: string[] = [];
   const isTest = r.dataset.kind === 'synthetic';
@@ -47,6 +80,7 @@ export function renderOptionScanReport(r: OptionScanResult): string {
   out.push(...wrap(`Contracts: ${c.retrieved} retrieved; ${c.excluded} excluded; ${c.eligible} eligible (${c.putsNotEvaluated} puts not evaluated); ${c.evaluated} evaluated; ${c.ranked} ranked; ${c.insufficient} with insufficient data.`, '  ', ''));
 
   out.push('', ...wrap(`RANKED CALLS (${r.ranked.length} shown) - ordered by evaluator verdict, then data reliability, tighter spread, higher open interest. A rule-based order, not a profit forecast.`, '  ', ''));
+  if (r.ranked.length > 0) out.push(...wrap(`Values: bid, ask, last, volume and open interest are provider-supplied [${tag}]; provider IV and delta are the provider's own model figures [${isTest ? 'TEST DATA' : 'THIRD-PARTY'}]; mid, spread and the verdict are CALCULATED. "Why" lists the evaluator's reasons.`, '  ', '  '));
   if (r.ranked.length === 0) out.push(partial ? '  No contract could be ranked among the underlyings that were scanned.' : '  No contract could be ranked.');
   r.ranked.forEach((cand) => out.push(...renderCandidate(cand, tag)));
   if (r.moreRanked > 0) out.push(`  +${r.moreRanked} more ranked contract(s) beyond the display limit (see --json).`);
@@ -63,7 +97,10 @@ export function renderOptionScanReport(r: OptionScanResult): string {
   }
   if (r.exclusions.length > 0) {
     out.push('', `EXCLUDED CONTRACTS (${c.excluded}; first reason shown)`);
-    for (const e of r.exclusions) out.push(`  ${EXCLUSION_LABEL[e.code]}: ${e.count} (e.g. ${e.examples.map(terminalSafe).join(', ')})`);
+    for (const e of r.exclusions) {
+      out.push(`  ${EXCLUSION_LABEL[e.code]}: ${e.count}`);
+      e.examples.forEach((x, i) => out.push(...wrap(`${terminalSafe(x)}: ${e.details[i] ?? ''}`, '        ', '      ')));
+    }
   }
   const rules = OPTION_SCAN_RULES;
   const notes = [
@@ -75,6 +112,7 @@ export function renderOptionScanReport(r: OptionScanResult): string {
   ];
   out.push('', 'DATA NOTES');
   for (const n of notes) out.push(...wrap(n, '    ', '  '));
+  out.push(...renderSummary(summarizeOptionScan(r), wrap));
   out.push(
     '',
     'Verdicts measure evidence from the evaluator\'s rules, not expected returns.',

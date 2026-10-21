@@ -190,7 +190,8 @@ test('movers and watchlist respect their display limits; the rest are reported, 
   assert.equal(r.watchlistOverLimit.length, 2);
   const report = renderScanReport(r);
   assert.match(report, /\+3 more met the threshold but exceed the display limit/);
-  assert.ok(report.split('\n').length <= 60, `report is ${report.split('\n').length} lines`);
+  // Stage 7 added a SCAN SUMMARY section (about 7 lines), so the cap moved from 60 to 70.
+  assert.ok(report.split('\n').length <= 70, `report is ${report.split('\n').length} lines`);
 });
 
 // ---- The synthetic fixture end to end ---------------------------------------------------------
@@ -617,7 +618,9 @@ test('coverage: complete coverage keeps the plain conclusion and says so', () =>
   const report = renderScanReport(liveScan([asset({ id: 'f' })], coverage));
   assert.ok(report.includes('\nHistory coverage: fetched for 1 of 1 assets that passed the non-history filters. Complete.\n'), report);
   assert.ok(report.includes('\nNo candidates met the evidence threshold.\n'), report);
-  assert.doesNotMatch(report, /PARTIAL|not a market-wide/);
+  // No partial-scan wording. (The Stage 7 summary's "COMPLETE ... (not a market-wide scan)" caveat is expected.)
+  assert.doesNotMatch(report, /PARTIAL|not a market-wide result/);
+  assert.match(report, /Status: +COMPLETE for the scanned scope \(not a market-wide scan\)/);
   // Complete coverage keeps the original universe wording exactly.
   assert.ok(report.includes('\nUniverse: 1 assets; 1 passed filters; 0 excluded.\n'), report);
   assert.doesNotMatch(report, /passed all filters|not evaluated/);

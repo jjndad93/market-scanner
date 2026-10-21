@@ -9,8 +9,10 @@ export interface NormalizedStockDataset {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isText = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+// An impossible date such as 2026-13-01 is a malformed bar, not a crash: check the parse before toISOString.
 const isIsoDate = (v: unknown): v is string =>
-  typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
+  typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T00:00:00Z`))
+  && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 
 /**
  * Validates a stock dataset. A "synthetic" dataset is TEST DATA; a "live" one was fetched by

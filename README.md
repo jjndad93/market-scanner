@@ -315,6 +315,35 @@ for the first 2 tickers. Check the following:
 
 Don't rerun it automatically or raise the limit without a separate decision.
 
+## Scan summaries (Stage 7)
+
+Every scan report (`scan crypto`, `scan stocks`, `scan options`) ends with a **SCAN SUMMARY**:
+
+- what was scanned
+- the data (synthetic fixture, live, or live with cache reuse) and whether the run was offline
+- how many candidates qualified
+- why the rest didn't: excluded, by first reason, plus the other outcomes such as "scored below
+  the evidence threshold", "insufficient data" or "puts not evaluated"
+- whether the scan was **COMPLETE** for its scope or **PARTIAL**, and why
+
+All counts come from the scan result itself, and they always add up to the number scanned.
+A complete scan is still described as "not a market-wide scan".
+
+`--json` output gains the same information as an additive `scan` object (`scanType`,
+`scannedAt`, `mode`, `data`, `source`, `scope`, `status`, `partialReasons`, `counts`,
+`qualified`, `notQualified`). Every existing field keeps its name and meaning.
+
+Other changes:
+
+- The stock report shows each excluded ticker's first reason in detail. Tickers that were
+  never evaluated stay grouped.
+- The options report shows each exclusion example with its specific reason, and an
+  "incomplete record" now says which fields were **missing** and which were **invalid**.
+- Both reports have a one-line legend saying which values are provider-supplied and which are
+  calculated.
+- An impossible date from a provider, such as month 13, is now counted as invalid instead of
+  stopping the scan.
+
 ## US options discovery (Stage 6)
 
 ```

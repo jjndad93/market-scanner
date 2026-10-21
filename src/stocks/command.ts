@@ -6,7 +6,7 @@ import type { ScanCommandDeps } from '../scanner/command.ts';
 import { parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
 import { runStockScan } from './analyze.ts';
 import { normalizeStockDataset } from './normalize.ts';
-import { renderStockReport } from './render.ts';
+import { renderStockReport, summarizeStockScan } from './render.ts';
 import { STOCK_UNIVERSE } from './rules.ts';
 
 export const STOCK_SCAN_HELP = `Usage:
@@ -62,7 +62,7 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
 
   const emit = (data: unknown, now: Date) => {
     const result = runStockScan(normalizeStockDataset(data), now);
-    deps.out(values.json ? terminalSafeJson(JSON.stringify(result, null, 2)) : renderStockReport(result));
+    deps.out(values.json ? terminalSafeJson(JSON.stringify({ ...result, scan: summarizeStockScan(result) }, null, 2)) : renderStockReport(result));
     return 0;
   };
 

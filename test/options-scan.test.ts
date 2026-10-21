@@ -60,7 +60,10 @@ test('filters: each unsuitable contract gets its reason; thresholds are the eval
   assert.deepEqual(codeOf({ open_interest: 99 }), ['low_open_interest']);
   assert.deepEqual(codeOf({ open_interest: undefined }), []); // liquidity unknown is not a reason to exclude (the evaluator flags it)
   assert.deepEqual(codeOf({ details: { ...snap().details, strike_price: 'x' }, underlying_asset: { ticker: 'SYNX' } }), ['incomplete']);
-  assert.match(one({ details: { ...snap().details, strike_price: 'x' }, underlying_asset: { ticker: 'SYNX' } }).reasons[0]!.detail, /strike, underlying price/);
+  // Stage 7: an omitted field is "missing"; a field sent in an unusable form is "invalid".
+  assert.equal(one({ details: { ...snap().details, strike_price: 'x' }, underlying_asset: { ticker: 'SYNX' } }).reasons[0]!.detail, 'missing: underlying price; invalid: strike ("x")');
+  assert.equal(one({ details: { ...snap().details, strike_price: -5, expiration_date: '2026-13-01' } }).reasons[0]!.detail, 'invalid: strike (-5), expiration ("2026-13-01")');
+  assert.equal(one({ underlying_asset: { ticker: 'SYNX', price: null } }).reasons[0]!.detail, 'missing: underlying price');
 });
 
 test('missing provider fields stay missing; nothing becomes zero', () => {
@@ -92,7 +95,8 @@ test('report: TEST DATA labels, honest ranking text, exclusions and notes, lines
   assert.match(text, /No contract is safe or certain to profit\./);
   assert.match(text, /NOT RANKED - insufficient data for the evaluator \(1\)/);
   assert.match(text, /ELIGIBLE PUTS - not evaluated: the option evaluator handles calls only \(1\)/);
-  assert.match(text, /spread too wide: 1 \(e\.g\. O:SYNA261218C00120000\)/);
+  assert.match(text, /spread too wide: 1\n {6}O:SYNA261218C00120000: spread is 31\.6% of mid \(limit 10%\)/); // Stage 7: each example with its reason
+  assert.match(text, /incomplete record: 1\n {6}O:SYNA261120C00999000: missing: strike/);
   assert.match(text, /provider IV n\/a \| provider delta n\/a/);
   assert.match(text.replace(/\s+/g, ' '), /only the first page was used \(no pagination yet\)/);
   // ("implied volatility is undefined." is the evaluator's own sentence; a stray JS undefined is not followed by a period.)

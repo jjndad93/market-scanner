@@ -14,7 +14,7 @@ import { createFileHistoryCache, historyCacheDir } from '../providers/history-ca
 import { type FetchLike, createHttpClient } from '../providers/http.ts';
 import { runScan } from './analyze.ts';
 import { normalizeDataset } from './normalize.ts';
-import { renderScanReport } from './render.ts';
+import { renderScanReport, summarizeCryptoScan } from './render.ts';
 
 export const SCAN_HELP = `Usage:
   node src/cli.ts scan crypto                  synthetic test fixture (default; no network)
@@ -138,7 +138,8 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
 
   const emit = (data: unknown, now: Date) => {
     const result = runScan(normalizeDataset(data), now);
-    deps.out(values.json ? terminalSafeJson(JSON.stringify(result, null, 2)) : renderScanReport(result));
+    // `scan` (Stage 7) is additive: every existing field keeps its name and meaning.
+    deps.out(values.json ? terminalSafeJson(JSON.stringify({ ...result, scan: summarizeCryptoScan(result) }, null, 2)) : renderScanReport(result));
     return 0;
   };
 

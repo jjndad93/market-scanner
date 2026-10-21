@@ -1,5 +1,6 @@
 import { KIND_LABEL, has } from '../core/evidence.ts';
 import { terminalSafe } from '../core/format.ts';
+import { renderSummary, type ScanSummary, tally } from '../core/summary.ts';
 import { formatNy } from '../core/time.ts';
 import { compactUsd } from './analyze.ts';
 import { SCAN_RULES, type ScanRules } from './rules.ts';
@@ -87,6 +88,39 @@ function renderWatch(c: Candidate, i: number, now: Date, ambiguous: ReadonlySet<
 
 const symbolList = (cs: Candidate[], ambiguous: ReadonlySet<string>) => cs.map((c) => `${assetLabel(c, ambiguous)} (${c.score}/${c.maxScore})`).join(', ');
 
+/** Stage 7 summary, built only from what the scan result holds. */
+export function summarizeCryptoScan(r: ScanResult): ScanSummary {
+  const live = r.dataset.kind === 'live';
+  const cov = r.dataset.coverage;
+  const qualified = r.movers.length + r.watchlist.length + r.moversOverLimit.length + r.watchlistOverLimit.length;
+  const partialReasons: string[] = [];
+  if (cov !== undefined && cov.historyNotRequested > 0) partialReasons.push(`${cov.historyNotRequested} eligible asset(s) not evaluated because ${cov.stopReason}`);
+  if (cov !== undefined && cov.historyRequestFailed > 0) partialReasons.push(`${cov.historyRequestFailed} history request(s) failed`);
+  return {
+    scanType: 'crypto',
+    scannedAt: r.evaluatedAt,
+    mode: live ? 'live' : 'offline',
+    data: live
+      ? `live CoinGecko data${cov !== undefined && cov.historyFromCache > 0 ? `; ${cov.historyFromCache} volume history(ies) reused from this UTC day's local cache` : ''}`
+      : 'synthetic fixture (TEST DATA), not market data',
+    source: r.dataset.source,
+    scope: live ? `${r.universe} crypto assets (CoinGecko top 250 by market cap)` : `${r.universe} crypto assets in the fixture`,
+    status: partialReasons.length > 0 ? 'partial' : 'complete',
+    partialReasons,
+    counts: {
+      universe: r.universe, passedFilters: r.passedFilters, excluded: r.excluded.length, qualified,
+      belowThreshold: r.belowThreshold.length, noPattern: r.notCandidates,
+      ...(cov !== undefined ? { historyEligible: cov.historyEligible, historyFetched: cov.historyFetched, historyFromCache: cov.historyFromCache, historyRequestFailed: cov.historyRequestFailed, historyNotRequested: cov.historyNotRequested } : {}),
+    },
+    qualified,
+    notQualified: [
+      ...tally(r.excluded.map((e) => `excluded: ${EXCLUSION_LABEL[e.reasons[0]!.code]}`)),
+      ...(r.belowThreshold.length > 0 ? [{ reason: 'matched a pattern but scored below the evidence threshold', count: r.belowThreshold.length }] : []),
+      ...(r.notCandidates > 0 ? [{ reason: 'passed filters but matched no mover/watchlist pattern', count: r.notCandidates }] : []),
+    ],
+  };
+}
+
 export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): string {
   const now = new Date(r.evaluatedAt);
   const out: string[] = [];
@@ -169,6 +203,7 @@ export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): 
     for (const n of notes) out.push(...wrap(n, '    ', '  '));
   }
 
+  out.push(...renderSummary(summarizeCryptoScan(r), wrap));
   out.push(
     '',
     'Scores measure the strength of the observed evidence, not expected returns. No price targets.',

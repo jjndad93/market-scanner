@@ -1,5 +1,6 @@
 import { KIND_LABEL } from '../core/evidence.ts';
 import { terminalSafe } from '../core/format.ts';
+import { renderSummary, type ScanSummary, tally } from '../core/summary.ts';
 import { formatNy } from '../core/time.ts';
 import { compactUsd } from '../scanner/analyze.ts';
 import { wrap } from '../scanner/render.ts';
@@ -39,6 +40,36 @@ function renderCandidate(c: StockCandidate, i: number): string[] {
 
 const listOf = (cs: StockCandidate[]) => cs.map((c) => `${terminalSafe(c.stock.symbol)} (${c.score}/${c.maxScore})`).join(', ');
 
+/** Stage 7 summary, built only from what the scan result holds. */
+export function summarizeStockScan(r: StockScanResult): ScanSummary {
+  const live = r.dataset.kind === 'live';
+  const qualified = r.movers.length + r.watchlist.length + r.overLimit.length;
+  const { requestFailed, notRequested } = r.notEvaluated;
+  const partialReasons: string[] = [];
+  if (notRequested > 0) partialReasons.push(`${notRequested} ticker(s) not evaluated: bars not requested (request or rate limit)`);
+  if (requestFailed > 0) partialReasons.push(`${requestFailed} ticker(s) not evaluated: bars request failed`);
+  return {
+    scanType: 'stocks',
+    scannedAt: r.evaluatedAt,
+    mode: live ? 'live' : 'offline',
+    data: live ? 'live Massive end-of-day bars (latest completed session; no intraday data)' : 'synthetic fixture (TEST DATA), not market data',
+    source: r.dataset.source,
+    scope: live ? `${r.universe} tickers in the fixed initial universe` : `${r.universe} tickers in the fixture`,
+    status: partialReasons.length > 0 ? 'partial' : 'complete',
+    partialReasons,
+    counts: {
+      universe: r.universe, passedFilters: r.passedFilters, excluded: r.excluded.length, notEvaluated: requestFailed + notRequested,
+      qualified, belowThreshold: r.belowThreshold.length, noPattern: r.notCandidates,
+    },
+    qualified,
+    notQualified: [
+      ...tally(r.excluded.map((e) => `excluded: ${EXCLUSION_LABEL[e.reasons[0]!.code]}`)),
+      ...(r.belowThreshold.length > 0 ? [{ reason: 'matched a pattern but scored below the evidence threshold', count: r.belowThreshold.length }] : []),
+      ...(r.notCandidates > 0 ? [{ reason: 'passed filters but matched no mover/watchlist pattern', count: r.notCandidates }] : []),
+    ],
+  };
+}
+
 export function renderStockReport(r: StockScanResult, rules: StockRules = STOCK_RULES): string {
   const out: string[] = [];
   const isTest = r.dataset.kind === 'synthetic';
@@ -59,6 +90,7 @@ export function renderStockReport(r: StockScanResult, rules: StockRules = STOCK_
   out.push(ev.latest === null
     ? 'Latest session evaluated: none (no ticker passed all filters).'
     : `Latest session evaluated: ${ev.earliest === ev.latest ? ev.latest : `${ev.earliest} to ${ev.latest} (differs by ticker)`}, for the ${ev.tickers} ticker(s) that passed all filters.`);
+  out.push(...wrap(`Values: close and volume are the provider's end-of-day bars [${isTest ? 'TEST DATA' : 'VERIFIED DATA'}]; % changes, medians, volume ratios and scores are CALCULATED from them.`, '  ', ''));
 
   if (r.movers.length === 0 && r.watchlist.length === 0) {
     out.push('', partial
@@ -78,9 +110,16 @@ export function renderStockReport(r: StockScanResult, rules: StockRules = STOCK_
 
   if (r.excluded.length > 0) {
     out.push('', `EXCLUDED (${r.excluded.length}; first reason shown, all reasons kept in the scan result)`);
+    // Evaluated-and-excluded tickers each get their first reason in detail; tickers that were never
+    // evaluated (bars not requested or failed) are grouped, since their reason is identical.
+    const notEvaluatedCodes = new Set<StockExclusionCode>(['history_not_requested', 'history_request_failed']);
     const groups = new Map<StockExclusionCode, string[]>();
-    for (const e of r.excluded) groups.set(e.reasons[0]!.code, [...(groups.get(e.reasons[0]!.code) ?? []), terminalSafe(e.symbol)]);
-    for (const [code, symbols] of groups) out.push(`  ${EXCLUSION_LABEL[code]}: ${symbols.slice(0, 8).join(', ')}${symbols.length > 8 ? ` +${symbols.length - 8} more` : ''}`);
+    for (const e of r.excluded) {
+      const first = e.reasons[0]!;
+      if (notEvaluatedCodes.has(first.code)) groups.set(first.code, [...(groups.get(first.code) ?? []), terminalSafe(e.symbol)]);
+      else out.push(...wrap(`${terminalSafe(e.symbol)}: ${EXCLUSION_LABEL[first.code]} - ${first.detail}${e.reasons.length > 1 ? ` (+${e.reasons.length - 1} more reason(s))` : ''}`, '      ', '  '));
+    }
+    for (const [code, symbols] of groups) out.push(...wrap(`${EXCLUSION_LABEL[code]}: ${symbols.slice(0, 8).join(', ')}${symbols.length > 8 ? ` +${symbols.length - 8} more` : ''}`, '      ', '  '));
   }
   const notes = [
     ...(r.dataset.notes ?? []),
@@ -90,6 +129,7 @@ export function renderStockReport(r: StockScanResult, rules: StockRules = STOCK_
     out.push('', 'DATA NOTES');
     for (const n of notes) out.push(...wrap(n, '    ', '  '));
   }
+  out.push(...renderSummary(summarizeStockScan(r), wrap));
   out.push(
     '',
     'Scores measure the strength of the observed evidence, not expected returns. No price targets.',
