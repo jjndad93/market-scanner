@@ -1,6 +1,6 @@
 import { KIND_LABEL, has } from '../core/evidence.ts';
 import { terminalSafe } from '../core/format.ts';
-import { renderSummary, type ScanSummary, tally } from '../core/summary.ts';
+import { nextStepForStop, renderSummary, type ScanSummary, tally } from '../core/summary.ts';
 import { formatNy } from '../core/time.ts';
 import { compactUsd } from './analyze.ts';
 import { SCAN_RULES, type ScanRules } from './rules.ts';
@@ -113,12 +113,25 @@ export function summarizeCryptoScan(r: ScanResult): ScanSummary {
       ...(cov !== undefined ? { historyEligible: cov.historyEligible, historyFetched: cov.historyFetched, historyFromCache: cov.historyFromCache, historyRequestFailed: cov.historyRequestFailed, historyNotRequested: cov.historyNotRequested } : {}),
     },
     qualified,
+    qualifiedNames: [...r.movers, ...r.watchlist, ...r.moversOverLimit, ...r.watchlistOverLimit].map((c) => c.asset.symbol),
+    freshness: cryptoFreshness(r),
+    nextStep: partialReasons.length > 0 ? nextStepForStop(cov?.stopReason ?? null, 'COINGECKO_DEMO_API_KEY', 'CoinGecko')
+      : live && r.passedFilters === 0 ? 'no asset passed every filter; see EXCLUDED above for the reasons.' : null,
     notQualified: [
       ...tally(r.excluded.map((e) => `excluded: ${EXCLUSION_LABEL[e.reasons[0]!.code]}`)),
       ...(r.belowThreshold.length > 0 ? [{ reason: 'matched a pattern but scored below the evidence threshold', count: r.belowThreshold.length }] : []),
       ...(r.notCandidates > 0 ? [{ reason: 'passed filters but matched no mover/watchlist pattern', count: r.notCandidates }] : []),
     ],
   };
+}
+
+/** Freshness from the scan's own timestamps and its stale-data rule; never claims real-time. */
+function cryptoFreshness(r: ScanResult): string {
+  const stale = r.excluded.filter((e) => e.reasons.some((x) => x.code === 'stale_data')).length;
+  const staleNote = `${stale} asset(s) excluded as stale (data older than ${SCAN_RULES.maxDataAgeMinutes} min or future-dated)`;
+  if (r.dataset.kind === 'synthetic') return `synthetic test data; its timestamps are invented (fixture snapshot ${formatNy(new Date(r.dataset.asOf))}). ${staleNote} by the same rule live data uses.`;
+  const cached = r.dataset.coverage?.historyFromCache ?? 0;
+  return `provider data fetched ${formatNy(new Date(r.dataset.asOf))}, as reported by the source (not verified as real-time). Every asset that passed the filters was updated within ${SCAN_RULES.maxDataAgeMinutes} min of the scan; ${staleNote}.${cached > 0 ? ` ${cached} volume history(ies) came from this UTC day's local cache (completed days only).` : ''}`;
 }
 
 export function renderScanReport(r: ScanResult, rules: ScanRules = SCAN_RULES): string {

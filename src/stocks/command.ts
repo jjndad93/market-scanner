@@ -4,7 +4,7 @@ import { MASSIVE_STOCKS_INFO, nextStepFor } from '../core/errors.ts';
 import { createHttpClient } from '../providers/http.ts';
 import { MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER, fetchStockDataset } from '../providers/massive.ts';
 import type { ScanCommandDeps } from '../scanner/command.ts';
-import { parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
+import { MISSING_KEY_NEXT_STEP, parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
 import { runStockScan } from './analyze.ts';
 import { normalizeStockDataset } from './normalize.ts';
 import { renderStockReport, summarizeStockScan } from './render.ts';
@@ -80,7 +80,7 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
     // The key is checked before any client exists, so a missing key can never cause a request.
     const key = deps.env[MASSIVE_KEY_ENV]?.trim();
     if (!key) {
-      deps.err(`--live needs a Massive API key in the ${MASSIVE_KEY_ENV} environment variable (for example a Windows user environment variable). No request was made.`);
+      deps.err(`--live needs a Massive API key in the ${MASSIVE_KEY_ENV} environment variable (for example a Windows user environment variable). No request was made.\n${MISSING_KEY_NEXT_STEP}`);
       return 1;
     }
     try {

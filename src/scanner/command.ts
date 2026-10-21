@@ -38,6 +38,9 @@ Flags:
 Offline by default: without --live nothing is requested, even if a key is set.
 Example (live, at most 4 requests): node src/cli.ts scan crypto --live --max-requests 4`;
 
+/** Shared by every live command when its key variable is not set. */
+export const MISSING_KEY_NEXT_STEP = 'Next step: set it once under Start > "Edit environment variables for your account" (never in a file in this folder), restart the terminal, and run again; or drop --live to use the offline fixture.';
+
 /** \`scan --help\`: every market in one place. */
 export const SCAN_OVERVIEW = `Usage: node src/cli.ts scan <market> [flags]      (add --help after a market for its flags)
 
@@ -180,7 +183,7 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
     // The key is checked before any client exists, so a missing key can never cause a request.
     const apiKey = deps.env[COINGECKO_KEY_ENV]?.trim();
     if (!apiKey) {
-      deps.err(`--live needs a CoinGecko Demo API key in the ${COINGECKO_KEY_ENV} environment variable (for example a Windows user environment variable). No request was made.`);
+      deps.err(`--live needs a CoinGecko Demo API key in the ${COINGECKO_KEY_ENV} environment variable (for example a Windows user environment variable). No request was made.\n${MISSING_KEY_NEXT_STEP}`);
       return 1;
     }
     try {

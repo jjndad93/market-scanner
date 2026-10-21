@@ -1,5 +1,5 @@
 import { money, terminalSafe } from '../core/format.ts';
-import { renderSummary, type ScanSummary } from '../core/summary.ts';
+import { nextStepForStop, renderSummary, type ScanSummary } from '../core/summary.ts';
 import { formatNy } from '../core/time.ts';
 import { wrap } from '../scanner/render.ts';
 import { OPTION_SCAN_RULES, type OptionExclusionCode, type OptionScanResult, type RankedCandidate } from './scan.ts';
@@ -57,12 +57,42 @@ export function summarizeOptionScan(r: OptionScanResult): ScanSummary {
       retrieved: c.retrieved, excluded: c.excluded, eligible: c.eligible, evaluated: c.evaluated, ranked: c.ranked, insufficient: c.insufficient, putsNotEvaluated: c.putsNotEvaluated,
     },
     qualified: c.ranked,
+    qualifiedNames: r.ranked.map((x) => x.contract.ticker),
+    freshness: optionFreshness(r),
+    nextStep: optionNextStep(r),
     notQualified: [
       ...r.exclusions.map((e) => ({ reason: `excluded: ${EXCLUSION_LABEL[e.code]}`, count: e.count })),
       ...(c.insufficient > 0 ? [{ reason: 'evaluated but insufficient data (not ranked)', count: c.insufficient }] : []),
       ...(c.putsNotEvaluated > 0 ? [{ reason: 'eligible puts not evaluated (calls only)', count: c.putsNotEvaluated }] : []),
     ],
   };
+}
+
+/** Live runs only (a fixture's gaps are part of the test data): the next step after a partial or empty scan. */
+function optionNextStep(r: OptionScanResult): string | null {
+  if (r.dataset.kind !== 'live') return null;
+  const notes = r.dataset.notes ?? [];
+  const u = r.underlyings;
+  if (u.failed.length + u.notRequested.length > 0) {
+    // The provider records why it stopped in its own DATA NOTES ("... because <reason>." or the HTTP 401/403 text).
+    const stop = /because (.+)\.$/.exec(notes.find((n) => n.startsWith('Option chains not requested')) ?? '')?.[1] ?? notes.find((n) => /HTTP 40[13]\)/.test(n)) ?? null;
+    return nextStepForStop(stop, 'POLYGON_API_KEY', 'Massive');
+  }
+  if (r.counts.retrieved === 0) return 'the provider returned no contracts; check --symbols and your plan.';
+  if (u.truncated.length > 0) return 'only the first page of contracts was used for some underlyings; narrow --symbols to fewer underlyings if you need more of each chain (no pagination yet).';
+  return null;
+}
+
+/** Freshness from the ranked contracts' own quote times and the stale-quote rule; never claims real-time. */
+function optionFreshness(r: OptionScanResult): string {
+  const stale = r.exclusions.find((e) => e.code === 'stale_quote')?.count ?? 0;
+  const times = r.ranked.map((x) => x.contract.quoteTime).filter((t): t is string => t !== null).sort();
+  const range = times.length === 0 ? 'no ranked contract, so no quote time to report'
+    : `ranked quotes timed ${formatNy(new Date(times[0]!))}${times.length > 1 && times[times.length - 1] !== times[0] ? ` to ${formatNy(new Date(times[times.length - 1]!))}` : ''}`;
+  const staleNote = `${stale} contract(s) excluded for a stale, undated or future-dated quote (more than ${OPTION_SCAN_RULES.maxQuoteAgeDays} days old)`;
+  return r.dataset.kind === 'synthetic'
+    ? `synthetic test data; its timestamps are invented; ${range}; ${staleNote}.`
+    : `provider snapshot fetched ${formatNy(new Date(r.dataset.asOf))}; ${range} (end-of-day or delayed depending on the plan; not verified as real-time); ${staleNote}.`;
 }
 
 export function renderOptionScanReport(r: OptionScanResult): string {

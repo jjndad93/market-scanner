@@ -39,6 +39,55 @@ node src/cli.ts option --file examples/hypothetical-contract.txt --live-context 
 node src/cli.ts scan options --live --symbols AAPL --max-requests 1   # LIVE: paid options plan only
 ```
 
+### Daily workflow (Windows PowerShell)
+
+A routine for each morning. Steps 1-4 are offline and free; only step 5 spends API requests,
+and only if you run it.
+
+```powershell
+npm test                                                   # 1. confirm the tool works (offline)
+node src/cli.ts scan crypto                                # 2. crypto scan (offline fixture)
+node src/cli.ts scan stocks                                # 2. US stock scan (offline fixture)
+node src/cli.ts option --file examples/hypothetical-contract.txt   # 3. evaluate a contract
+node src/cli.ts scan options                               # 4. options discovery (offline fixture)
+node src/cli.ts scan stocks --live --max-requests 20       # 5. LIVE: up to 20 Massive requests
+node src/cli.ts scan crypto --live --max-requests 40       # 5. LIVE: up to 40 CoinGecko requests
+```
+
+To see your own contract in step 3, put its details in a text file and pass that file's path
+in place of `examples/hypothetical-contract.txt`.
+
+**Reading the result.** Start with the **SCAN SUMMARY** at the end of each report:
+
+- **Freshness** says what the data is:
+  - synthetic test data (invented timestamps)
+  - fresh provider data, with its fetch time; nothing is described as real-time
+  - histories reused from today's cache
+  - how many items were excluded as stale
+- **Status** is `COMPLETE` for the scanned scope, or `PARTIAL` with the reason, such as the
+  request limit, a rate limit, or a rejected key.
+- **Next step** appears only when something limited the scan, and says what to do. For
+  example, raise `--max-requests`, wait out a rate limit, or check the key or plan; a
+  rejected key won't be fixed by retrying.
+- **Qualified** names the candidates worth a closer look. **Not qualified** shows why the
+  rest were left out.
+
+Each candidate entry in the report shows its own evidence ("Why"), risks and data time. None
+of it is a prediction or a recommendation.
+
+**Saving JSON for later.** Save outside this OneDrive-synced folder. Use `Out-File -Encoding
+utf8`, because PowerShell 5.1's `>` writes UTF-16, which many tools can't read:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\market-scans" | Out-Null
+node src/cli.ts scan stocks --json | Out-File -Encoding utf8 "$HOME\market-scans\stocks-$(Get-Date -Format yyyy-MM-dd).json"
+Get-Content "$HOME\market-scans\stocks-$(Get-Date -Format yyyy-MM-dd).json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty scan
+```
+
+The saved file holds the full result, with the same summary under `scan`: `status`,
+`freshness`, `qualifiedNames`, `nextStep` and the counts. Add `--live` to the `node` line only
+when you mean to spend requests.
+
 **Your own contract:** copy the output of `option --template` into a text file and replace the
 example values with your broker's figures. Then run
 `node src/cli.ts option --file my-contract.txt`, where `my-contract.txt` is your file's name.

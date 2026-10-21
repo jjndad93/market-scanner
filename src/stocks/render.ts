@@ -1,6 +1,6 @@
 import { KIND_LABEL } from '../core/evidence.ts';
 import { terminalSafe } from '../core/format.ts';
-import { renderSummary, type ScanSummary, tally } from '../core/summary.ts';
+import { nextStepForStop, renderSummary, type ScanSummary, tally } from '../core/summary.ts';
 import { formatNy } from '../core/time.ts';
 import { compactUsd } from '../scanner/analyze.ts';
 import { wrap } from '../scanner/render.ts';
@@ -62,12 +62,30 @@ export function summarizeStockScan(r: StockScanResult): ScanSummary {
       qualified, belowThreshold: r.belowThreshold.length, noPattern: r.notCandidates,
     },
     qualified,
+    qualifiedNames: [...r.movers, ...r.watchlist, ...r.overLimit].map((c) => c.stock.symbol),
+    freshness: stockFreshness(r),
+    nextStep: partialReasons.length > 0
+      // The provider records its stop reason in its own DATA NOTES line ("... because <reason>; they were not evaluated.").
+      ? nextStepForStop(/because (.+?); they were not evaluated\./.exec((r.dataset.notes ?? []).find((n) => n.startsWith('Daily bars not requested')) ?? '')?.[1] ?? null, 'POLYGON_API_KEY', 'Massive')
+      : live && r.passedFilters === 0 ? 'no ticker passed every filter; see EXCLUDED above for the reasons.' : null,
     notQualified: [
       ...tally(r.excluded.map((e) => `excluded: ${EXCLUSION_LABEL[e.reasons[0]!.code]}`)),
       ...(r.belowThreshold.length > 0 ? [{ reason: 'matched a pattern but scored below the evidence threshold', count: r.belowThreshold.length }] : []),
       ...(r.notCandidates > 0 ? [{ reason: 'passed filters but matched no mover/watchlist pattern', count: r.notCandidates }] : []),
     ],
   };
+}
+
+/** Freshness from the evaluated session dates and the staleness rule; end-of-day, never real-time. */
+function stockFreshness(r: StockScanResult): string {
+  const stale = r.excluded.filter((e) => e.reasons.some((x) => x.code === 'stale_data')).length;
+  const ev = r.evaluatedSessions;
+  const sessions = ev.latest === null ? 'no ticker passed the filters, so no session was evaluated'
+    : `latest completed session evaluated: ${ev.earliest === ev.latest ? ev.latest : `${ev.earliest} to ${ev.latest}`}`;
+  const staleNote = `${stale} ticker(s) excluded as stale (latest session more than ${STOCK_RULES.maxSessionAgeDays} days old, or future-dated)`;
+  return r.dataset.kind === 'synthetic'
+    ? `synthetic test data; its dates are invented (fixture snapshot ${formatNy(new Date(r.dataset.asOf))}); ${sessions}; ${staleNote}.`
+    : `end-of-day bars fetched ${formatNy(new Date(r.dataset.asOf))} (not real-time; no intraday or pre-market data); ${sessions}; ${staleNote}.`;
 }
 
 export function renderStockReport(r: StockScanResult, rules: StockRules = STOCK_RULES): string {

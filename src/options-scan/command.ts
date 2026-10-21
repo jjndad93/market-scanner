@@ -5,7 +5,7 @@ import { createHttpClient } from '../providers/http.ts';
 import { MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER } from '../providers/massive.ts';
 import { fetchOptionChains } from '../providers/massive-options.ts';
 import type { ScanCommandDeps } from '../scanner/command.ts';
-import { parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
+import { MISSING_KEY_NEXT_STEP, parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
 import { STOCK_UNIVERSE } from '../stocks/rules.ts';
 import { renderOptionScanReport, summarizeOptionScan } from './render.ts';
 import { type OptionScanDataset, runOptionScan } from './scan.ts';
@@ -82,7 +82,7 @@ export async function runOptionScanCommand(args: string[], deps: ScanCommandDeps
     // The key is checked before any client exists, so a missing key can never cause a request.
     const key = deps.env[MASSIVE_KEY_ENV]?.trim();
     if (!key) {
-      deps.err(`--live needs a Massive API key in the ${MASSIVE_KEY_ENV} environment variable, on a plan that includes the options Snapshot. No request was made.`);
+      deps.err(`--live needs a Massive API key in the ${MASSIVE_KEY_ENV} environment variable, on a plan that includes the options Snapshot. No request was made.\n${MISSING_KEY_NEXT_STEP}`);
       return 1;
     }
     try {
