@@ -240,7 +240,10 @@ and never TEST DATA; fixture reports are always TEST DATA.
 
 **Failures never produce invented data.** If the markets request fails (timeout, HTTP error,
 rate limit, malformed response), no report is produced. HTTP 429 is retried once after the
-server's Retry-After (if given and at most 60 s). Each asset that passes the non-history filters
+server's Retry-After (if given and at most 60 s). A rejected key (HTTP 401) or refused access
+(HTTP 403) on a history request is never retried. It stops all further requests at once, because
+every later request would be rejected too. Histories fetched or cached before that point are
+kept, the rest are reported as not requested, and the scan is marked PARTIAL. Each asset that passes the non-history filters
 ends in exactly one of three history outcomes, and only the first is evaluated:
 
 - **fetched**: history was obtained and parsed. It can still be excluded as "too little
@@ -336,7 +339,8 @@ documentation, checked 2026-10-21:
 The scanner makes one request per ticker to
 `/v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}?adjusted=true` (split-adjusted daily bars,
 45 calendar days). Requests are spaced 12.5 s apart, so a full run of 20 tickers takes about
-4 minutes. The 429 handling and request limit are the same as the crypto scan's. A ticker
+4 minutes. The 429 handling and request limit are the same as the crypto scan's, and so is the
+authentication stop: a 401 or 403 ends the run with no retry and no further requests. A ticker
 whose request fails, or that is never requested because of the limit or a rate limit, is
 excluded as "not evaluated", and the report is marked PARTIAL SCAN.
 

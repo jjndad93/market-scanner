@@ -14,7 +14,7 @@
 import { terminalSafe } from '../core/format.ts';
 import { addDaysIso, nyDateString, nyWallTimeToUtc } from '../core/time.ts';
 import type { RawBar, RawStock } from '../stocks/types.ts';
-import { MASSIVE_STOCKS_INFO, nextStepFor } from '../core/errors.ts';
+import { MASSIVE_STOCKS_INFO, authStopReason, nextStepFor } from '../core/errors.ts';
 import { type HttpClient, HttpError } from './http.ts';
 
 /** What went wrong with one request, without the key (the HTTP client redacts it). */
@@ -112,7 +112,10 @@ export async function fetchStockDataset(o: StockFetchOptions) {
       }
       if (!(err instanceof HttpError) && !(err instanceof MassiveResponseError)) throw err;
       firstFailure ??= err;
-      if (err instanceof HttpError && (err.kind === 'rate_limited' || err.kind === 'budget')) stopReason = err.kind === 'rate_limited' ? 'the provider rate-limited the run' : `the per-run limit of ${o.maxCalls} requests was reached`;
+      // Stage 9: a rejected key (401) or refused access (403) would repeat for every ticker; stop now.
+      const authStop = authStopReason(err, MASSIVE_STOCKS_INFO);
+      if (authStop !== null) stopReason = authStop;
+      else if (err instanceof HttpError && (err.kind === 'rate_limited' || err.kind === 'budget')) stopReason = err.kind === 'rate_limited' ? 'the provider rate-limited the run' : `the per-run limit of ${o.maxCalls} requests was reached`;
       failed.push(symbol);
       stocks.push({ symbol, historyStatus: 'request_failed' });
     }

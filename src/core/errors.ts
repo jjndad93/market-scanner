@@ -31,6 +31,19 @@ export function nextStepFor(err: unknown, p: ProviderInfo): string {
   }
 }
 
+/**
+ * Stage 9: a confirmed authentication (401) or permission (403) rejection, as a stop reason for a
+ * request loop, or null for anything else. Every later request with the same key would be rejected
+ * the same way, so the loop must stop. Rate limits (429), timeouts, network errors, bad JSON and
+ * other HTTP statuses are NOT treated as authentication failures.
+ */
+export function authStopReason(err: unknown, p: ProviderInfo): string | null {
+  if (!(err instanceof HttpError) || err.kind !== 'http') return null;
+  if (err.status === 401) return `${p.name} rejected the API key (HTTP 401), so the remaining requests were not sent (they would be rejected the same way); check ${p.keyEnv} and your ${p.name} account`;
+  if (err.status === 403) return `${p.name} refused access (HTTP 403), so the remaining requests were not sent (they would be refused the same way); check your ${p.name} plan and permissions`;
+  return null;
+}
+
 export const COINGECKO_INFO: ProviderInfo = { name: 'CoinGecko', keyEnv: 'COINGECKO_DEMO_API_KEY', forbiddenHint: 'the Demo key may not include this endpoint' };
 export const MASSIVE_STOCKS_INFO: ProviderInfo = { name: 'Massive', keyEnv: 'POLYGON_API_KEY', forbiddenHint: 'your Massive plan may not include stock daily bars (the free Stocks Basic plan does)' };
 export const MASSIVE_OPTIONS_INFO: ProviderInfo = {

@@ -24,6 +24,7 @@
  * used) and reports the rest.
  */
 
+import { COINGECKO_INFO, authStopReason } from '../core/errors.ts';
 import { terminalSafe } from '../core/format.ts';
 import { DAY_MS } from '../core/time.ts';
 import { computeMetrics, exclusionReasons } from '../scanner/analyze.ts';
@@ -298,7 +299,12 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
         }
         // From here the request WAS sent: it is reported as attempted and failed.
         diagnostics?.push({ id, outcome: `request failed (${failureOutcome(err)})` });
-        if (err.kind === 'rate_limited' || err.kind === 'budget') {
+        const authStop = authStopReason(err, COINGECKO_INFO);
+        if (authStop !== null) {
+          // Stage 9: a rejected key or refused access would repeat for every request; stop now.
+          stopReason = authStop;
+          failed.push(id);
+        } else if (err.kind === 'rate_limited' || err.kind === 'budget') {
           // Stop: the provider is rate-limiting, or a 429 retry no longer fits the request limit.
           stopReason = err.kind === 'rate_limited' ? 'the provider rate-limited the run' : `the per-run limit of ${maxCalls} requests was reached`;
           failed.push(id);
