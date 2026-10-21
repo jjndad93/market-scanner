@@ -73,6 +73,7 @@ function renderMover(c: Candidate, i: number, now: Date, ambiguous: ReadonlySet<
     `    Volume ${compactUsd(a.volume24h.value!)} = ${c.metrics.relativeVolume.value!.toFixed(2)}x the ${a.dailyVolumes.length}-day median${turnover}`,
     ...wrap(`Why: ${why(c)}`, '      ', '    '),
     ...wrap(`Risks: ${c.risks.join(' ')}`, '      ', '    '),
+    ...baselineLine(c),
     `    ${dataLine(c, now)}`,
   ];
 }
@@ -82,8 +83,20 @@ function renderWatch(c: Candidate, i: number, now: Date, ambiguous: ReadonlySet<
   return [
     `${String(i + 1).padStart(2)}. ${terminalSafe(a.name)} (${assetLabel(c, ambiguous)})  ${price(a.price.value!)}  ${signedPct(a.change24hPct.value!)} 24h   Evidence ${c.score}/${c.maxScore}`,
     `    Volume ${compactUsd(a.volume24h.value!)} = ${c.metrics.relativeVolume.value!.toFixed(2)}x median, no large move yet. A research lead, not a prediction.`,
+    ...baselineLine(c),
     `    ${dataLine(c, now)}`,
   ];
+}
+
+/**
+ * Stage 11, informational only (not scored): shown when the volume baseline is highly variable,
+ * or could not be measured. A stable baseline adds no line, so ordinary reports are unchanged.
+ */
+function baselineLine(c: Candidate): string[] {
+  const r = c.volumeReliability;
+  if (r.insufficient) return wrap(`Volume baseline: variability not measured (only ${r.validDays} valid daily volumes). Informational; not scored.`, '      ', '    ');
+  if (!r.highlyVariable) return [];
+  return wrap(`Volume baseline: HIGHLY VARIABLE - the middle half of its ${r.validDays} daily volumes spans a ${r.iqrRatio.toFixed(1)}x range (${compactUsd(r.q1)} to ${compactUsd(r.q3)}), so the ${c.metrics.relativeVolume.value!.toFixed(2)}x multiple is less conclusive. This does not by itself mean manipulation or bad data. Informational; not scored.`, '      ', '    ');
 }
 
 const symbolList = (cs: Candidate[], ambiguous: ReadonlySet<string>) => cs.map((c) => `${assetLabel(c, ambiguous)} (${c.score}/${c.maxScore})`).join(', ');

@@ -166,7 +166,14 @@ export interface Candidate {
   maxScore: number;
   breakdown: ScorePart[];
   risks: string[];
+  /** Stage 11, informational only: how variable the volume baseline is (never affects the score). */
+  volumeReliability: VolumeReliability;
 }
+
+/** Spread of the baseline's valid daily volumes; `insufficient` when too few days to measure it. */
+export type VolumeReliability =
+  | { validDays: number; insufficient: false; q1: number; q3: number; iqrRatio: number; highlyVariable: boolean }
+  | { validDays: number; insufficient: true };
 
 export interface ScanResult {
   dataset: DatasetMeta;

@@ -47,6 +47,12 @@ export const SCAN_RULES = {
   thinVolume24h: 25_000_000, // below this, spreads and slippage are likely to matter
   extremeRelVolume: 10, // a spike this large may be a one-off or a reporting artifact
   highTurnover: 0.5, // 24h volume above half the market cap suggests speculative churn
+  // Stage 11, informational only (never scored): when the middle half of the baseline's daily
+  // volumes spans this many-fold range (Q3 / Q1), the baseline is "highly variable" and a volume
+  // multiple says less. A heuristic: on real data from 2026-10-21, seven large coins measured
+  // 1.4-2.5 and an erratic one 38.5. Q3/Q1 ignores the lowest and highest quarter of days, so a
+  // single tiny or huge day cannot trigger it (unlike max/min).
+  variableBaselineIqrRatio: 4,
 };
 
 export type ScanRules = { readonly [K in keyof typeof SCAN_RULES]: number };

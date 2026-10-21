@@ -14,7 +14,7 @@ import {
   WRAPPED_STAKED_SYMBOLS,
   WRAPPED_STAKED_TAGS,
 } from './rules.ts';
-import type { AssetMetrics, AssetSnapshot, Candidate, CandidateKind, Exclusion, ExclusionReason, ScanResult, ScorePart } from './types.ts';
+import type { AssetMetrics, AssetSnapshot, Candidate, CandidateKind, Exclusion, ExclusionReason, ScanResult, ScorePart, VolumeReliability } from './types.ts';
 
 export function median(values: readonly number[]): number | null {
   if (values.length === 0) return null;
@@ -45,6 +45,28 @@ export function computeMetrics(a: AssetSnapshot, now: Date): AssetMetrics {
     : missing<number>('needs 24h volume and market cap');
   const dataAgeMinutes = asOf !== null ? (now.getTime() - Date.parse(asOf)) / 60_000 : null;
   return { baselineVolume, relativeVolume, turnover, dataAgeMinutes };
+}
+
+/** Quantile by linear interpolation between closest ranks (input sorted ascending, non-empty). */
+function quantile(sorted: readonly number[], p: number): number {
+  const i = (sorted.length - 1) * p;
+  const lo = Math.floor(i);
+  const hi = Math.ceil(i);
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (i - lo);
+}
+
+/**
+ * Stage 11, informational only: the interquartile ratio Q3/Q1 of the baseline's valid daily
+ * volumes (zero and invalid days are already excluded from them). Needs at least
+ * `minHistoryDays` values; with fewer it reports `insufficient` instead of a number.
+ */
+export function volumeReliability(dailyVolumes: readonly number[], rules: ScanRules = SCAN_RULES): VolumeReliability {
+  const v = dailyVolumes.filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
+  if (v.length < rules.minHistoryDays) return { validDays: v.length, insufficient: true };
+  const q1 = quantile(v, 0.25);
+  const q3 = quantile(v, 0.75);
+  const iqrRatio = q3 / q1;
+  return { validDays: v.length, insufficient: false, q1, q3, iqrRatio, highlyVariable: iqrRatio >= rules.variableBaselineIqrRatio };
 }
 
 /** Every reason an asset is excluded (all that apply, not just the first). */
@@ -266,6 +288,7 @@ export function runScan(data: NormalizedDataset, now: Date, rules: ScanRules = S
       direction: a.change24hPct.value! >= 0 ? 'up' : 'down',
       ...scored,
       risks: riskNotes(a, m, kind, rules),
+      volumeReliability: volumeReliability(a.dailyVolumes, rules),
     };
     const threshold = kind === 'mover' ? rules.moverMinScore : rules.watchMinScore;
     if (candidate.score < threshold) belowThreshold.push(candidate);

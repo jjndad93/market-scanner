@@ -139,7 +139,7 @@ export interface DailyVolumeStats {
  * passed through unchanged (the normalizer validates them). Missing days and conflicting
  * duplicates become null entries, which the scanner counts as unusable history.
  */
-export function parseDailyVolumes(json: unknown, now: Date): { volumes: unknown[]; stats: DailyVolumeStats } {
+export function parseDailyVolumes(json: unknown, now: Date): { volumes: unknown[]; stats: DailyVolumeStats; missingDates: string[] } {
   if (!isRecord(json) || !Array.isArray(json.total_volumes)) {
     throw new ProviderResponseError('/market_chart response has no total_volumes array.');
   }
@@ -171,10 +171,16 @@ export function parseDailyVolumes(json: unknown, now: Date): { volumes: unknown[
   }
   const days = [...byDay.keys()].sort((a, b) => a - b);
   const volumes: unknown[] = [];
+  /** Stage 11: the 00:00 UTC date of every missing day (gaps and missing recent days), oldest first. */
+  const missingDates: string[] = [];
+  const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
   for (let i = 0; i < days.length; i++) {
     if (i > 0) {
       const missingDays = Math.round((days[i]! - days[i - 1]!) / DAY_MS) - 1;
-      for (let g = 0; g < missingDays; g++) volumes.push(null);
+      for (let g = 0; g < missingDays; g++) {
+        volumes.push(null);
+        missingDates.push(iso(days[i - 1]! + (g + 1) * DAY_MS));
+      }
       stats.gaps += missingDays;
     }
     const entry = byDay.get(days[i]!)!;
@@ -185,9 +191,22 @@ export function parseDailyVolumes(json: unknown, now: Date): { volumes: unknown[
   if (days.length > 0) {
     const yesterday = startOfToday - DAY_MS;
     stats.missingRecent = Math.max(0, Math.round((yesterday - days[days.length - 1]!) / DAY_MS));
-    for (let g = 0; g < stats.missingRecent; g++) volumes.push(null);
+    for (let g = 0; g < stats.missingRecent; g++) {
+      volumes.push(null);
+      missingDates.push(iso(days[days.length - 1]! + (g + 1) * DAY_MS));
+    }
   }
-  return { volumes, stats };
+  return { volumes, stats, missingDates };
+}
+
+/**
+ * Stage 11: splits an asset's missing dates by the baseline window (the last `windowDays` daily
+ * entries, i.e. the dates from `windowDays` days before today up to yesterday). Only dates inside
+ * the window are counted as unusable in the baseline; earlier ones are not used at all.
+ */
+export function classifyMissingDates(missingDates: string[], now: Date, windowDays: number): { inWindow: string[]; beforeWindow: string[]; windowStart: string } {
+  const windowStart = new Date(Math.floor(now.getTime() / DAY_MS) * DAY_MS - windowDays * DAY_MS).toISOString().slice(0, 10);
+  return { inWindow: missingDates.filter((d) => d >= windowStart), beforeWindow: missingDates.filter((d) => d < windowStart), windowStart };
 }
 
 export interface LiveFetchOptions {
@@ -264,6 +283,7 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   const history = new Map<string, unknown[]>();
   const failed: string[] = [];
   const notRequested: string[] = [];
+  const missingByAsset: { id: string; inWindow: string[]; beforeWindow: string[]; windowStart: string }[] = [];
   const odd = { invalid: 0, priorIntraday: 0, todayMidnight: 0, todayAfterMidnight: 0, future: 0, conflicts: 0, gaps: 0, missingRecent: 0 };
   const diagnostics: HistoryDiagnostic[] | undefined = options.diagnostics ? [] : undefined;
   let stopReason: string | null = null;
@@ -316,8 +336,9 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
     }
     const described = diagnostics ? describeHistory(json, fetchedAt) : null;
     try {
-      const { volumes, stats } = parseDailyVolumes(json, fetchedAt);
+      const { volumes, stats, missingDates } = parseDailyVolumes(json, fetchedAt);
       history.set(id, volumes);
+      if (missingDates.length > 0) missingByAsset.push({ id, ...classifyMissingDates(missingDates, fetchedAt, rules.historyWindowDays) });
       for (const k of Object.keys(odd) as (keyof typeof odd)[]) odd[k] += stats[k];
       if (cached !== null) {
         fromCache++;
@@ -361,7 +382,15 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   if (notRequested.length > 0) notes.push(`History not requested for ${notRequested.length} asset(s) (${idList(notRequested)}) because ${stopReason}; they are excluded as history not requested and were not evaluated.`);
   const today = odd.todayMidnight + odd.todayAfterMidnight;
   if (today + odd.priorIntraday + odd.invalid + odd.future > 0 || odd.conflicts > 0 || odd.gaps > 0 || odd.missingRecent > 0) {
-    notes.push(`History points not used: ${today} from the current (incomplete) UTC day (${odd.todayMidnight} at 00:00 UTC, ${odd.todayAfterMidnight} later), ${odd.priorIntraday} earlier points not at 00:00 UTC, ${odd.future} future, ${odd.invalid} invalid; ${odd.conflicts} conflicting duplicates, ${odd.gaps} missing days and ${odd.missingRecent} missing recent days counted as unusable.`);
+    notes.push(`History points not used: ${today} from the current (incomplete) UTC day (${odd.todayMidnight} at 00:00 UTC, ${odd.todayAfterMidnight} later), ${odd.priorIntraday} earlier points not at 00:00 UTC, ${odd.future} future, ${odd.invalid} invalid; ${odd.conflicts} conflicting duplicates counted as unusable; ${odd.gaps} missing days and ${odd.missingRecent} missing recent days${odd.gaps + odd.missingRecent > 0 ? ` (by asset below; only days inside the ${rules.historyWindowDays}-day baseline window affect a baseline)` : ''}.`);
+  }
+  // Stage 11: name each asset with missing days and say whether they affected its baseline.
+  const dateList = (d: string[]) => (d.length <= 6 ? d.join(', ') : `${d.slice(0, 6).join(', ')} and ${d.length - 6} more`);
+  for (const m of missingByAsset) {
+    const where = m.inWindow.length === 0
+      ? `all before its ${rules.historyWindowDays}-day baseline window (which starts ${m.windowStart}), so they did not affect its baseline (${dateList(m.beforeWindow)}).`
+      : `${m.inWindow.length} inside its ${rules.historyWindowDays}-day baseline window (counted as unusable days in that baseline: ${dateList(m.inWindow)})${m.beforeWindow.length > 0 ? `; ${m.beforeWindow.length} before it, not used (${dateList(m.beforeWindow)})` : ''}.`;
+    notes.push(`Missing history for ${terminalSafe(m.id)}: ${m.inWindow.length + m.beforeWindow.length} daily observation(s), ${where}`);
   }
   notes.push('Each daily history point is the rolling 24h volume ending at 00:00 UTC, i.e. the previous UTC day (confirmed by a one-coin live check; not a data-quality guarantee for every coin).');
 

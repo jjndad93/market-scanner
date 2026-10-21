@@ -209,6 +209,23 @@ last-updated time, and prior daily volumes):
   zeros are not used in the median because providers often report 0 for missing data. At least
   20 valid days are required, more than 5 zero/invalid days makes the history unreliable, and
   a median baseline under $1M/day is too small to support a volume ratio.
+- **Volume baseline reliability (Stage 11, informational only):** for each candidate, the
+  scanner measures how spread out its baseline's daily volumes are, as the interquartile ratio
+  Q3 / Q1. In plain terms, that's how many-fold the middle half of the days spans.
+  - **When it shows:** a ratio of 4 or more adds a "Volume baseline: HIGHLY VARIABLE" line to
+    that candidate. On real data, large coins measured 1.4-2.5.
+  - **Why this measure:** it ignores the lowest and highest quarter of days, so one tiny or huge
+    day can't set it off (max/min can).
+  - **Too few days:** with fewer than 20 valid days the line says the variability wasn't
+    measured.
+  - **What it changes:** no score, threshold, filter or ranking. It only says that a volume
+    multiple from such a baseline is less conclusive. It doesn't imply manipulation or bad
+    data.
+  - **JSON:** each candidate gains `volumeReliability`.
+- **Missing history days** (live): each coin with missing daily observations is named in DATA
+  NOTES. The note says whether the days fall inside its 30-day baseline window, where they're
+  counted as unusable, or before it, where they weren't used and didn't affect the baseline.
+  This is separate from stale data, which concerns how old the current price and volume are.
 - **Duplicates and symbol collisions**: identical duplicate records are counted once (the extra
   copy is listed as a duplicate); records that share an id but disagree are all excluded, since
   there is no basis for choosing one. Distinct ids that share a symbol are flagged under
