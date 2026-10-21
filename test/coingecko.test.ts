@@ -327,14 +327,14 @@ test('a failed or malformed markets response produces no dataset', async () => {
   await assert.rejects(fetchLiveDataset({ client, clock: () => NOW, sleep: async () => {} }), /HTTP 503/);
 });
 
-test('live output is deterministic, attributed, flags the unverified volume meaning, and never contains the key', async () => {
+test('live output is deterministic, attributed, states the volume meaning and its limits, and never contains the key', async () => {
   const markets = [coin({ id: 'syn-a' }), coin({ id: 'syn-b', symbol: 'sb', price_change_percentage_24h: 1, total_volume: 60e6 })];
   const one = await live(markets, () => ({ status: 200, body: chart(20e6) }));
   const two = await live(markets, () => ({ status: 200, body: chart(20e6) }));
   assert.equal(JSON.stringify(one.data), JSON.stringify(two.data));
   const report = renderScanReport(scan(one.data));
   assert.match(report, /^Attribution: Data provided by CoinGecko \(https:\/\/www\.coingecko\.com\)$/m);
-  assert.match(report.replace(/\s+/g, ' '), /not yet verified against live data/);
+  assert.match(report.replace(/\s+/g, ' '), /rolling 24h volume ending at 00:00 UTC, i\.e\. the previous UTC day \(confirmed by a one-coin live check; not a data-quality guarantee for every coin\)/);
   assert.doesNotMatch(report, /TEST DATA/);
   assert.ok(!JSON.stringify(one.data).includes(KEY) && !report.includes(KEY));
   // Each synthetic chart ends with an intraday "now" point, which must be dropped and reported.

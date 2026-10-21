@@ -212,14 +212,19 @@ OneDrive-synced folder. The key is sent only in the `x-cg-demo-api-key` header, 
 and is never printed or written; errors redact it. Without the variable, `--live` stops before
 making any request.
 
-**Unresolved: what a daily history volume point means.** CoinGecko's documentation describes
-the points only as "24hrs volume", with daily auto-granularity at "00:00 UTC" and "the last
-completed UTC day (00:00) data" available at 00:10 UTC. It does not say whether a point is a
-rolling 24h volume at that moment or a calendar-day total, or which day a 00:00 point belongs
-to. The adapter keeps only points exactly at 00:00 UTC before the current UTC day (oldest
-first, duplicates collapsed; conflicting duplicates, missing days and missing recent days
-counted as unusable) and every live report says the meaning is not yet verified. This must be confirmed
-with a separately approved live check (S7) before live results are relied on.
+**What a daily history volume point means (S7).** A `/market_chart` volume point at time T is
+the rolling 24h volume ending at T, so a 00:00 UTC daily point covers the previous UTC day.
+CoinGecko's documentation only calls the points "24hrs volume"; this was established by one
+approved live check (S7, 3 requests, Bitcoin, 2026-10-21): the 91-day daily series and the 2-day
+hourly series agreed exactly at both midnights (daily/hourly ratio 1.0000 at yesterday and today
+00:00 UTC), the hourly series showed no reset at midnight (after/before ratios 0.969 and 0.981),
+and the latest chart point matched `/coins/markets` `total_volume` (ratio 0.993), so the current
+24h volume and the history are measured the same way. The responses also end with an extra
+"now" point. This supports the interpretation for these endpoints; it does not establish data
+quality for every coin or the predictive value of any signal. The adapter keeps only points
+exactly at 00:00 UTC before the current UTC day (oldest first, duplicates collapsed; conflicting
+duplicates, missing days and missing recent days counted as unusable). Today's 00:00 point
+(yesterday's total) is conservatively not used, so the 30-day baseline ends one day earlier.
 
 **History cache (S6).** Successfully parsed `/market_chart` volume histories are stored in a local
 cache outside this OneDrive-synced folder (`%LOCALAPPDATA%\market-scanner\coingecko-history` on

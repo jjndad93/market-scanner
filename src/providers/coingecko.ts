@@ -14,11 +14,14 @@
  * days > 90 and no interval parameter (checked 2026-10-20). The scanner still uses only the
  * most recent 30 days.
  *
- * UNRESOLVED (to verify in the approved S7 live check): whether a daily point is a rolling 24h
- * volume at that timestamp or a calendar-day total (and which day a 00:00 point belongs to),
- * and whether the series ends with an extra intraday point. The docs do not say. The parser
- * therefore keeps only points exactly at 00:00 UTC before the start of the current UTC day,
- * and reports the rest.
+ * Meaning (S7 live check, Bitcoin, 2026-10-21, 3 requests): a volume point at time T is the
+ * rolling 24h volume ending at T, so a 00:00 UTC daily point covers the previous UTC day. The
+ * daily and hourly series agreed exactly at both midnights (ratio 1.0000), the hourly series
+ * showed no reset at midnight, and the latest chart point matched /coins/markets total_volume
+ * (ratio 0.993). Responses end with an extra "now" point. This covers the tested endpoints, not
+ * data quality for every coin. The parser keeps only points exactly at 00:00 UTC before the
+ * start of the current UTC day (today's 00:00 point, yesterday's total, is conservatively not
+ * used) and reports the rest.
  */
 
 import { terminalSafe } from '../core/format.ts';
@@ -354,7 +357,7 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   if (today + odd.priorIntraday + odd.invalid + odd.future > 0 || odd.conflicts > 0 || odd.gaps > 0 || odd.missingRecent > 0) {
     notes.push(`History points not used: ${today} from the current (incomplete) UTC day (${odd.todayMidnight} at 00:00 UTC, ${odd.todayAfterMidnight} later), ${odd.priorIntraday} earlier points not at 00:00 UTC, ${odd.future} future, ${odd.invalid} invalid; ${odd.conflicts} conflicting duplicates, ${odd.gaps} missing days and ${odd.missingRecent} missing recent days counted as unusable.`);
   }
-  notes.push('The exact meaning of a daily history volume point (rolling 24h vs calendar day) is not yet verified against live data.');
+  notes.push('Each daily history point is the rolling 24h volume ending at 00:00 UTC, i.e. the previous UTC day (confirmed by a one-coin live check; not a data-quality guarantee for every coin).');
 
   return {
     dataset: { kind: 'live', label: 'CoinGecko live snapshot', source: COINGECKO_SOURCE, asOf: fetchedAt.toISOString(), attribution: COINGECKO_ATTRIBUTION, notes, coverage },
