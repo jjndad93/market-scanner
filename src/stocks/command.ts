@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
+import { MASSIVE_STOCKS_INFO, nextStepFor } from '../core/errors.ts';
 import { createHttpClient } from '../providers/http.ts';
 import { MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER, fetchStockDataset } from '../providers/massive.ts';
 import type { ScanCommandDeps } from '../scanner/command.ts';
@@ -21,7 +22,12 @@ Flags:
                       about 12.5 s apart (free plan: 5 calls/minute)
   --json              print the structured scan result as JSON
   --now <ISO time>    fixture mode only: evaluate as of this time (default: the fixture's snapshot time)
-  --max-requests <n>  live only: request cap for this run, retries included (default ${STOCK_UNIVERSE.length})`;
+  --max-requests <n>  live only: request cap for this run, retries included (default ${STOCK_UNIVERSE.length})
+  --help, -h          show this help (never makes a request)
+
+Offline by default: without --live nothing is requested, even if a key is set. The free
+Massive Stocks Basic plan is enough. End-of-day data only (no intraday or pre-market).
+Example (live, at most 2 requests): node src/cli.ts scan stocks --live --max-requests 2`;
 
 export const BUNDLED_STOCK_FIXTURE = new URL('../../test/fixtures/stock-scan.synthetic.json', import.meta.url);
 
@@ -31,12 +37,16 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
   try {
     ({ values } = parseArgs({
       args,
-      options: { fixture: { type: 'string' }, live: { type: 'boolean', default: false }, json: { type: 'boolean', default: false }, now: { type: 'string' }, 'max-requests': { type: 'string' } },
+      options: { fixture: { type: 'string' }, live: { type: 'boolean', default: false }, json: { type: 'boolean', default: false }, now: { type: 'string' }, 'max-requests': { type: 'string' }, help: { type: 'boolean', short: 'h', default: false } },
       strict: true,
     }));
   } catch (e) {
-    deps.err(`${e instanceof Error ? e.message : String(e)}\n\n${STOCK_SCAN_HELP}`);
+    deps.err(`${e instanceof Error ? e.message : String(e)}. Run "node src/cli.ts scan stocks --help" for the supported flags. No request was made.\n\n${STOCK_SCAN_HELP}`);
     return 1;
+  }
+  if ((values as { help?: boolean }).help) {
+    deps.out(STOCK_SCAN_HELP);
+    return 0;
   }
   if (values.live && values.fixture !== undefined) {
     deps.err('Use either --live or --fixture, not both.');
@@ -82,7 +92,7 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
     } catch (e) {
       // Errors never contain the key; redact here as well, defensively (with and without the prefix).
       const message = (e instanceof Error ? e.message : String(e)).split(key).join('[REDACTED]');
-      deps.err(`Live scan failed; no report was produced. ${message}`);
+      deps.err(`Live scan failed; no report was produced. ${message}\nNext step: ${nextStepFor(e, MASSIVE_STOCKS_INFO)}`);
       return 1;
     }
   }

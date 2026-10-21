@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
+import { MASSIVE_OPTIONS_INFO, nextStepFor } from '../core/errors.ts';
 import { createHttpClient } from '../providers/http.ts';
 import { MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER } from '../providers/massive.ts';
 import { fetchOptionChains } from '../providers/massive-options.ts';
@@ -22,7 +23,13 @@ Flags:
   --symbols <list>    live only: comma-separated underlyings (default: the stock scanner's ${STOCK_UNIVERSE.length} tickers)
   --max-requests <n>  live only: request cap for this run, retries included (default: one per underlying)
   --json              print the structured result as JSON
-  --now <ISO time>    fixture mode only: evaluate as of this time (default: the fixture's snapshot time)`;
+  --now <ISO time>    fixture mode only: evaluate as of this time (default: the fixture's snapshot time)
+  --help, -h          show this help (never makes a request)
+
+Offline by default: without --live nothing is requested, even if a key is set. On a plan
+without Snapshot access the first live request is refused (HTTP 401/403) and the run stops;
+retrying will not help until the plan changes.
+Example (live, 1 request): node src/cli.ts scan options --live --symbols AAPL --max-requests 1`;
 
 export const BUNDLED_OPTION_FIXTURE = new URL('../../test/fixtures/options-scan.synthetic.json', import.meta.url);
 
@@ -34,13 +41,17 @@ export async function runOptionScanCommand(args: string[], deps: ScanCommandDeps
       args,
       options: {
         fixture: { type: 'string' }, live: { type: 'boolean', default: false }, json: { type: 'boolean', default: false }, now: { type: 'string' },
-        'max-requests': { type: 'string' }, symbols: { type: 'string' },
+        'max-requests': { type: 'string' }, symbols: { type: 'string' }, help: { type: 'boolean', short: 'h', default: false },
       },
       strict: true,
     }));
   } catch (e) {
-    deps.err(`${e instanceof Error ? e.message : String(e)}\n\n${OPTION_SCAN_HELP}`);
+    deps.err(`${e instanceof Error ? e.message : String(e)}. Run "node src/cli.ts scan options --help" for the supported flags. No request was made.\n\n${OPTION_SCAN_HELP}`);
     return 1;
+  }
+  if ((values as { help?: boolean }).help) {
+    deps.out(OPTION_SCAN_HELP);
+    return 0;
   }
   if (values.live && values.fixture !== undefined) { deps.err('Use either --live or --fixture, not both.'); return 1; }
   if (values.live && values.now !== undefined) { deps.err('--now is only for fixture scans; a live scan must use the current time so freshness checks are honest.'); return 1; }
@@ -79,7 +90,7 @@ export async function runOptionScanCommand(args: string[], deps: ScanCommandDeps
       const data = await fetchOptionChains({ client, clock: deps.clock, underlyings: symbols, maxCalls: maxRequests, sleep: deps.sleep });
       return emit(data, deps.clock());
     } catch (e) {
-      deps.err(`Live scan failed; no report was produced. ${(e instanceof Error ? e.message : String(e)).split(key).join('[REDACTED]')}`);
+      deps.err(`Live scan failed; no report was produced. ${(e instanceof Error ? e.message : String(e)).split(key).join('[REDACTED]')}\nNext step: ${nextStepFor(e, MASSIVE_OPTIONS_INFO)}`);
       return 1;
     }
   }

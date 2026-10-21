@@ -3,17 +3,61 @@
 A local research tool for US stocks, crypto and call options. It explains evidence; it does
 not predict prices, connect to a brokerage, place orders or trade automatically.
 
-**Status: Stage 1 and Stage 2 complete; Stage 3 (US stocks) started.** The offline call-option
-evaluator works. `scan crypto` runs on a synthetic fixture by default, and `scan crypto --live`
-(CoinGecko Demo API) has been run against live data in small capped smoke tests, with a
-same-day history cache (S6) and a verified meaning for daily volume points (S7). `scan stocks`
-(Stage 3) works on a synthetic fixture and is tested with mocked responses only; its live path
-(Massive, formerly Polygon.io) has not been run against live data yet.
+**Status: Stages 1-8 complete.** Every command runs offline on synthetic fixtures by default.
+
+- **Option evaluator:** works offline, with opt-in live context via `--live-context`.
+- **Crypto scan (`scan crypto --live`, CoinGecko):** run against live data in small capped
+  smoke tests.
+- **Stock scan (`scan stocks --live`, Massive end-of-day):** run in one capped smoke test.
+- **Options discovery (`scan options --live`):** built and tested offline only. It needs a paid
+  Massive options plan.
 
 ## Requirements
 
-Node.js 22.18 or newer (runs the TypeScript files directly). No packages to install, no API
-keys needed for Stage 1.
+Node.js 22.18 or newer (runs the TypeScript files directly). No packages to install. No API
+keys are needed for anything offline.
+
+## Quick start (Windows PowerShell)
+
+Every line below runs unchanged except the first, where `<path-to>` is a placeholder for
+wherever this folder is on your computer. Nothing here uses the network unless the line says
+**live**.
+
+```powershell
+cd "<path-to>\market-scanner"      # placeholder: replace <path-to> with your folder
+npm test                                                   # offline test suite
+node src/cli.ts --help                                     # every command, flag and key name
+node src/cli.ts scan crypto                                # crypto scan, synthetic fixture
+node src/cli.ts scan stocks                                # US stock scan, synthetic fixture
+node src/cli.ts scan stocks --json                         # same, as structured JSON
+node src/cli.ts option --file examples/hypothetical-contract.txt   # evaluate a contract file
+node src/cli.ts option --template                          # the fields a contract file can hold
+node src/cli.ts scan options                               # options discovery, synthetic fixture
+node src/cli.ts scan crypto --live --max-requests 4        # LIVE: at most 4 CoinGecko requests
+node src/cli.ts scan stocks --live --max-requests 2        # LIVE: at most 2 Massive requests
+node src/cli.ts option --file examples/hypothetical-contract.txt --live-context   # LIVE: 1 request
+node src/cli.ts scan options --live --symbols AAPL --max-requests 1   # LIVE: paid options plan only
+```
+
+**Your own contract:** copy the output of `option --template` into a text file and replace the
+example values with your broker's figures. Then run
+`node src/cli.ts option --file my-contract.txt`, where `my-contract.txt` is your file's name.
+Never put an API key in that file.
+
+**Live data:** only the lines marked LIVE use the network.
+
+- **Keys:** set them once as Windows *user* environment variables (Start > "Edit environment
+  variables for your account" > New): `COINGECKO_DEMO_API_KEY` for crypto, and `POLYGON_API_KEY`
+  for stocks, options and `--live-context`.
+- **Restart the terminal** after setting a key so it's picked up.
+- **Keep keys out of the command line:** don't type a key into a command, which can save it in
+  your history.
+- **Request limits:** `--max-requests` caps each live run, retries included.
+- **Missing key:** a live command stops before making any request and tells you which variable
+  to set.
+- **Errors:** when a live request fails, the message says what happened and what to do next.
+  For example, a key the provider rejected (HTTP 401) or a plan without access (HTTP 403)
+  can't be fixed by retrying.
 
 ## Evaluate a call option
 
@@ -215,9 +259,9 @@ whose history was fetched. `--json` carries the same figures in `dataset.coverag
 partial scan still exits with code 0; check `complete` to detect one.
 
 **API key.** Live mode reads the key only from the `COINGECKO_DEMO_API_KEY` environment
-variable. Store it as a Windows *user* environment variable (System Properties > Environment
-Variables, or `setx COINGECKO_DEMO_API_KEY <key>` in a new terminal), not in a file inside this
-OneDrive-synced folder. The key is sent only in the `x-cg-demo-api-key` header, never in a URL,
+variable. Store it as a Windows *user* environment variable (Start > "Edit environment
+variables for your account"), not in a file inside this OneDrive-synced folder. Avoid typing
+the key into a terminal command, because it can stay in your shell history. The key is sent only in the `x-cg-demo-api-key` header, never in a URL,
 and is never printed or written; errors redact it. Without the variable, `--live` stops before
 making any request.
 

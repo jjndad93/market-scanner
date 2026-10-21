@@ -83,7 +83,9 @@ export async function applyLiveContext(contract: ContractInput, context: MarketC
   } catch (e) {
     return unavailable(`the request failed (${(e instanceof Error ? e.message : String(e)).split(key).join('[REDACTED]')})`, client.callsMade);
   }
-  if (data.stocks[0]?.historyStatus !== undefined) return unavailable('the daily-bars request failed or was rate-limited (no retry by design)', client.callsMade);
+  if (data.stocks[0]?.historyStatus !== undefined) {
+    return unavailable(`the daily-bars request failed or was rate-limited (no retry by design)${data.firstFailure ? `: ${data.firstFailure}` : ''}`, client.callsMade);
+  }
   const stock = normalizeStockDataset(data).stocks[0]!;
   const calc = calculateLiveContext(stock.bars, deps.clock());
   if ('reason' in calc) return unavailable(calc.reason, client.callsMade);

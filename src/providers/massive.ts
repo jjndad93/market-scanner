@@ -14,7 +14,12 @@
 import { terminalSafe } from '../core/format.ts';
 import { addDaysIso, nyDateString, nyWallTimeToUtc } from '../core/time.ts';
 import type { RawBar, RawStock } from '../stocks/types.ts';
+import { MASSIVE_STOCKS_INFO, nextStepFor } from '../core/errors.ts';
 import { type HttpClient, HttpError } from './http.ts';
+
+/** What went wrong with one request, without the key (the HTTP client redacts it). */
+const describeFailure = (e: HttpError | MassiveResponseError) =>
+  (e instanceof HttpError ? e.message : `the response could not be used (${e.message})`).replace(/\.?$/, '.');
 
 export const MASSIVE_BASE_URL = 'https://api.massive.com';
 /** The variable name already reserved in .env.example (the provider was renamed from Polygon.io). */
@@ -81,6 +86,8 @@ export async function fetchStockDataset(o: StockFetchOptions) {
   const notRequested: string[] = [];
   let dropped = 0;
   let stopReason: string | null = null;
+  /** The first failed request, for an actionable note (messages never contain the key). */
+  let firstFailure: HttpError | MassiveResponseError | null = null;
   let first = true;
   for (const symbol of o.universe) {
     if (stopReason !== null || o.client.callsMade >= o.maxCalls) {
@@ -104,6 +111,7 @@ export async function fetchStockDataset(o: StockFetchOptions) {
         continue;
       }
       if (!(err instanceof HttpError) && !(err instanceof MassiveResponseError)) throw err;
+      firstFailure ??= err;
       if (err instanceof HttpError && (err.kind === 'rate_limited' || err.kind === 'budget')) stopReason = err.kind === 'rate_limited' ? 'the provider rate-limited the run' : `the per-run limit of ${o.maxCalls} requests was reached`;
       failed.push(symbol);
       stocks.push({ symbol, historyStatus: 'request_failed' });
@@ -111,11 +119,14 @@ export async function fetchStockDataset(o: StockFetchOptions) {
   }
   const notes = [`${o.universe.length} tickers in the fixed initial universe; ${o.client.callsMade} of ${o.maxCalls} allowed requests used.`];
   if (failed.length > 0) notes.push(`Daily-bars request failed for ${failed.length} ticker(s) (${list(failed)}); they were not evaluated.`);
+  if (firstFailure !== null) notes.push(`First failure: ${describeFailure(firstFailure)} Next step: ${nextStepFor(firstFailure, MASSIVE_STOCKS_INFO)}`);
   if (notRequested.length > 0) notes.push(`Daily bars not requested for ${notRequested.length} ticker(s) (${list(notRequested)}) because ${stopReason}; they were not evaluated.`);
   if (dropped > 0) notes.push(`${dropped} bar(s) from the current, still-open session were not used.`);
   notes.push('Bars are end-of-day and split-adjusted; volume is shares traded per session as reported by the provider.');
   return {
     dataset: { kind: 'live' as const, label: 'Massive end-of-day snapshot', source: MASSIVE_SOURCE, asOf: now.toISOString(), attribution: MASSIVE_ATTRIBUTION, notes },
     stocks,
+    /** Additive (Stage 8): the first failure's explanation, or null. */
+    firstFailure: firstFailure === null ? null : `${describeFailure(firstFailure)} ${nextStepFor(firstFailure, MASSIVE_STOCKS_INFO)}`,
   };
 }

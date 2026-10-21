@@ -41,6 +41,11 @@ export function stockExclusionReasons(s: StockSnapshot, m: StockMetrics | null, 
   if (s.historyStatus === 'request_failed') return [{ code: 'history_request_failed', detail: 'the daily-bars request failed or returned no usable data; not evaluated' }];
   const reasons: StockExclusion['reasons'] = [];
   const invalidNote = s.invalidBars > 0 ? `; ${s.invalidBars} malformed or conflicting bar(s) not used` : '';
+  if (s.bars.length === 0 && s.invalidBars === 0) {
+    // An empty response is not a short history: say so, and what it usually means.
+    reasons.push({ code: 'insufficient_history', detail: 'the provider returned no daily bars (check the ticker symbol; it may be unknown, delisted, or have had no trading in the period)' });
+    return reasons;
+  }
   if (m === null || m.baselineSessions < rules.minBaselineSessions) {
     reasons.push({ code: 'insufficient_history', detail: `${m?.baselineSessions ?? 0} usable baseline session(s) of ${rules.minBaselineSessions} needed (${s.bars.length} bars)${invalidNote}` });
     return reasons;

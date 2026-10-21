@@ -105,6 +105,7 @@ export function renderOptionScanReport(r: OptionScanResult): string {
   const rules = OPTION_SCAN_RULES;
   const notes = [
     ...(r.dataset.notes ?? []),
+    ...((r.underlyings.empty ?? []).length > 0 ? [`The provider returned no contracts for ${r.underlyings.empty!.map(terminalSafe).join(', ')} in the requested expiration window: check the symbol (it may be unknown or have no listed options).`] : []),
     ...(r.underlyings.truncated.length > 0 ? [`The provider returned more than one page of contracts for ${r.underlyings.truncated.map(terminalSafe).join(', ')}; only the first page was used (no pagination yet).`] : []),
     `Filters: expiration ${rules.minDaysToExpiration}+ days away; valid, uncrossed bid/ask quoted within ${rules.maxQuoteAgeDays} days; spread at most ${rules.maxSpreadOfMid * 100}% of mid; open interest at least ${rules.minOpenInterest} when supplied. Spread, open interest and expiration limits are the evaluator's own thresholds.`,
     'Evaluation uses the existing option evaluator with no pasted context: historical volatility, earnings and dividend dates are missing, which the evaluator reports and which keeps verdicts cautious.',

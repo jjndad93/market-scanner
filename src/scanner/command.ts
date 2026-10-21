@@ -10,6 +10,7 @@ import {
   fetchLiveDataset,
   terminalSafe,
 } from '../providers/coingecko.ts';
+import { COINGECKO_INFO, nextStepFor } from '../core/errors.ts';
 import { createFileHistoryCache, historyCacheDir } from '../providers/history-cache.ts';
 import { type FetchLike, createHttpClient } from '../providers/http.ts';
 import { runScan } from './analyze.ts';
@@ -31,7 +32,30 @@ Flags:
   --max-requests <n>      live only: request cap for this run, 1-${DEFAULT_MAX_CALLS}
                           (default ${DEFAULT_MAX_CALLS}); retries count against it
   --history-diagnostics   live only: print each fetched history's point count and first
-                          2 / last 3 timestamps (UTC, classified) to stderr; no volume values`;
+                          2 / last 3 timestamps (UTC, classified) to stderr; no volume values
+  --help, -h        show this help (never makes a request)
+
+Offline by default: without --live nothing is requested, even if a key is set.
+Example (live, at most 4 requests): node src/cli.ts scan crypto --live --max-requests 4`;
+
+/** \`scan --help\`: every market in one place. */
+export const SCAN_OVERVIEW = `Usage: node src/cli.ts scan <market> [flags]      (add --help after a market for its flags)
+
+Markets:
+  crypto    CoinGecko top 250 by market cap. Live key: ${COINGECKO_KEY_ENV} (free Demo key).
+  stocks    Fixed list of 20 large US stocks, Massive end-of-day bars. Live key: POLYGON_API_KEY
+            (the free Stocks Basic plan is enough).
+  options   US option chains for the stock list or --symbols. Live key: POLYGON_API_KEY on a
+            Massive options plan that includes Snapshot (Options Starter or higher; the free
+            Options Basic plan does NOT).
+
+Every market reads its bundled synthetic fixture by default and makes no network request.
+Add --live only when you intend to spend API requests; --max-requests caps them (retries
+included) and --json prints structured output.
+Examples:
+  node src/cli.ts scan crypto
+  node src/cli.ts scan stocks --json
+  node src/cli.ts scan crypto --live --max-requests 4`;
 
 /** Parses --max-requests strictly: a whole number from 1 to the default cap, no signs or spaces. */
 export function parseMaxRequests(text: string): number | null {
@@ -85,6 +109,10 @@ export interface ScanCommandDeps {
 /** Runs `scan <market> ...`. Returns the process exit code. */
 export async function runScanCommand(args: string[], deps: ScanCommandDeps): Promise<number> {
   const [market, ...rest] = args;
+  if (market === '--help' || market === '-h' || market === 'help') {
+    deps.out(SCAN_OVERVIEW);
+    return 0;
+  }
   if (market === 'stocks') {
     // Loaded on demand: the stock command reuses helpers from this module.
     const { runStockScanCommand } = await import('../stocks/command.ts');
@@ -96,7 +124,7 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
   }
   if (market !== 'crypto') {
     deps.err(market === undefined ? 'Choose a market to scan ("crypto", "stocks" or "options").\n' : `Unknown market "${market}". Available: "crypto", "stocks", "options".\n`);
-    deps.err(SCAN_HELP);
+    deps.err(SCAN_OVERVIEW);
     return 1;
   }
 
@@ -107,12 +135,17 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
       options: {
         fixture: { type: 'string' }, live: { type: 'boolean', default: false }, json: { type: 'boolean', default: false }, now: { type: 'string' },
         'max-requests': { type: 'string' }, 'history-diagnostics': { type: 'boolean', default: false },
+        help: { type: 'boolean', short: 'h', default: false },
       },
       strict: true,
     }));
   } catch (e) {
-    deps.err(`${e instanceof Error ? e.message : String(e)}\n\n${SCAN_HELP}`);
+    deps.err(`${e instanceof Error ? e.message : String(e)}. Run "node src/cli.ts scan crypto --help" for the supported flags. No request was made.\n\n${SCAN_HELP}`);
     return 1;
+  }
+  if ((values as { help?: boolean }).help) {
+    deps.out(SCAN_HELP);
+    return 0;
   }
   if (values.live && values.fixture !== undefined) {
     deps.err('Use either --live or --fixture, not both.');
@@ -166,7 +199,7 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
     } catch (e) {
       // Errors from the provider modules never contain the key; redact here as well, defensively.
       const message = (e instanceof Error ? e.message : String(e)).split(apiKey).join('[REDACTED]');
-      deps.err(`Live scan failed; no report was produced. ${message}`);
+      deps.err(`Live scan failed; no report was produced. ${message}\nNext step: ${nextStepFor(e, COINGECKO_INFO)}`);
       return 1;
     }
   }

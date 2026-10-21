@@ -70,7 +70,7 @@ export interface RankedCandidate {
 export interface OptionScanResult {
   dataset: OptionScanDataset['dataset'];
   evaluatedAt: string;
-  underlyings: { scanned: number; failed: string[]; notRequested: string[]; truncated: string[] };
+  underlyings: { scanned: number; failed: string[]; notRequested: string[]; truncated: string[]; /** Stage 8, present only when non-empty: chains with no contracts. */ empty?: string[] };
   counts: { retrieved: number; excluded: number; eligible: number; evaluated: number; ranked: number; insufficient: number; putsNotEvaluated: number };
   ranked: RankedCandidate[];
   /** Ranked candidates beyond the display limit. */
@@ -202,6 +202,7 @@ export function runOptionScan(data: OptionScanDataset, now: Date, rules = OPTION
   const failed: string[] = [];
   const notRequested: string[] = [];
   const truncated: string[] = [];
+  const empty: string[] = [];
   let retrieved = 0;
   const eligibleCalls: OptionContract[] = [];
   const putsNotEvaluated: string[] = [];
@@ -216,6 +217,7 @@ export function runOptionScan(data: OptionScanDataset, now: Date, rules = OPTION
       continue;
     }
     if (parsed.truncated) truncated.push(chain.underlying);
+    if (parsed.contracts.length === 0) empty.push(chain.underlying);
     for (const raw of parsed.contracts) {
       retrieved++;
       const { contract, reasons } = validateContract(raw, now, rules);
@@ -238,7 +240,7 @@ export function runOptionScan(data: OptionScanDataset, now: Date, rules = OPTION
   return {
     dataset: data.dataset,
     evaluatedAt: now.toISOString(),
-    underlyings: { scanned: data.chains.length - failed.length - notRequested.length, failed, notRequested, truncated },
+    underlyings: { scanned: data.chains.length - failed.length - notRequested.length, failed, notRequested, truncated, ...(empty.length > 0 ? { empty } : {}) },
     counts: {
       retrieved, excluded: excludedCount, eligible: eligibleCalls.length + putsNotEvaluated.length, evaluated: evaluated.length,
       ranked: sufficient.length, insufficient: insufficient.length, putsNotEvaluated: putsNotEvaluated.length,
