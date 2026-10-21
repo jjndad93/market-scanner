@@ -25,7 +25,7 @@ const EXCLUSION_LABEL: Record<ExclusionCode, string> = {
   stale_data: 'stale data',
 };
 
-function wrap(text: string, indent: string, first = indent): string[] {
+export function wrap(text: string, indent: string, first = indent): string[] {
   const out: string[] = [];
   let line = first;
   for (const word of text.split(/\s+/).filter(Boolean)) {

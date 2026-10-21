@@ -85,7 +85,7 @@ test('--live without the key fails before any request; empty or blank keys count
 });
 
 test('invalid flag combinations and unknown markets are rejected without network access', async () => {
-  for (const args of [['crypto', '--live', '--fixture', 'x.json'], ['crypto', '--live', '--now', '2026-10-21T12:00:00Z'], ['crypto', '--bogus'], ['stocks'], []]) {
+  for (const args of [['crypto', '--live', '--fixture', 'x.json'], ['crypto', '--live', '--now', '2026-10-21T12:00:00Z'], ['crypto', '--bogus'], ['bonds'], []]) {
     const t = deps({ env: { COINGECKO_DEMO_API_KEY: KEY } });
     assert.equal(await runScanCommand(args, t.d), 1, args.join(' '));
     assert.equal(t.fetchCalls(), 0, args.join(' '));

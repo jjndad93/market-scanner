@@ -3,10 +3,12 @@
 A local research tool for US stocks, crypto and call options. It explains evidence; it does
 not predict prices, connect to a brokerage, place orders or trade automatically.
 
-**Status: Stage 1 complete; Stage 2 P1 complete; P2 steps S1-S5 implemented (not yet run
-against live data).** The offline call-option evaluator works. `scan crypto` runs the crypto
-scanner on a synthetic fixture by default; `scan crypto --live` (CoinGecko Demo API) is built
-and tested only with mocked responses. No live request has been made yet.
+**Status: Stage 1 and Stage 2 complete; Stage 3 (US stocks) started.** The offline call-option
+evaluator works. `scan crypto` runs on a synthetic fixture by default, and `scan crypto --live`
+(CoinGecko Demo API) has been run against live data in small capped smoke tests, with a
+same-day history cache (S6) and a verified meaning for daily volume points (S7). `scan stocks`
+(Stage 3) works on a synthetic fixture and is tested with mocked responses only; its live path
+(Massive, formerly Polygon.io) has not been run against live data yet.
 
 ## Requirements
 
@@ -237,6 +239,75 @@ entry is ignored. Reused histories cost no request, so later runs on the same da
 assets within `--max-requests`; the report's coverage line, a DATA NOTES line and
 `dataset.coverage.historyFromCache` say how many were reused. Delete the folder to clear it.
 
+## US stock scan (Stage 3)
+
+```
+node src/cli.ts scan stocks                    # bundled synthetic fixture; never uses the network
+node src/cli.ts scan stocks --fixture <file>   # another synthetic fixture (must declare "synthetic")
+node src/cli.ts scan stocks --json             # structured result instead of the text report
+node src/cli.ts scan stocks --live             # Massive end-of-day bars; explicit opt-in
+node src/cli.ts scan stocks --live --max-requests 2   # capped smoke test (retries included)
+```
+
+**What it scans.** A fixed initial universe of 20 large, liquid US stocks
+(`src/stocks/rules.ts`). That's a small, defined list, not a market-wide scan and not a
+recommendation list; there is no universe discovery yet. For each ticker, the latest
+completed session is compared with the 20 sessions before it:
+
+- **Mover:** |1-day change| >= 4% on volume >= 1.5x the median.
+- **Watchlist:** |1-day change| < 2% on volume >= 2x the median.
+
+Evidence is scored as a rule tally, the same way the crypto scanner does it (unusual volume,
+size of move, dollar volume traded, 5-day trend). It's not a probability. Exclusions:
+
+- fewer than 15 usable baseline sessions
+- a gap of more than 5 calendar days between bars
+- a latest session more than 4 days old
+- a close under $5
+- a median under $20M traded per session
+- relative volume above 50x (treated as a data error)
+- duplicate symbols
+
+Malformed or conflicting bars are counted and named in DATA NOTES, never used. All thresholds
+are provisional heuristics.
+
+**End-of-day data only.** The free plan gives end-of-day bars, so a morning scan describes the
+previous completed session. It sees no pre-market or intraday moves. A bar for the current
+session is ignored until 20:00 ET. Catalysts are not verified.
+
+**Provider: Massive (formerly Polygon.io), free "Stocks Basic" plan.** From the official
+documentation, checked 2026-10-21:
+
+- 5 API calls per minute
+- end-of-day data, 2 years of history, all US stock tickers
+- individual, non-professional use only
+
+The scanner makes one request per ticker to
+`/v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}?adjusted=true` (split-adjusted daily bars,
+45 calendar days). Requests are spaced 12.5 s apart, so a full run of 20 tickers takes about
+4 minutes. The 429 handling and request limit are the same as the crypto scan's. A ticker
+whose request fails, or that is never requested because of the limit or a rate limit, is
+excluded as "not evaluated", and the report is marked PARTIAL SCAN.
+
+**API key.** Create a free key at massive.com yourself; the tool never creates accounts. Store
+it as a Windows *user* environment variable named `POLYGON_API_KEY`, the name reserved in
+`.env.example`. Use System Properties > Environment Variables, not a file in this
+OneDrive-synced folder. Restart the terminal or app so it's picked up. The key is sent only
+in the `Authorization: Bearer` header, never in a URL, and is never printed. Without it,
+`--live` stops before making any request.
+
+**First live smoke test (only after it's approved).** Run exactly
+`node src/cli.ts scan stocks --live --max-requests 2`: at most 2 requests, retries included,
+for the first 2 tickers. Check the following:
+
+- the report shows the `Attribution:` line and `[VERIFIED DATA]` tags, and no TEST DATA
+- the DATA NOTES say "2 of 2 allowed requests used"
+- the other 18 tickers are listed as not requested, with the Universe line marked PARTIAL SCAN
+- the latest session date is the last completed trading day
+- the key appears nowhere in the output
+
+Don't rerun it automatically or raise the limit without a separate decision.
+
 ## Tests
 
 ```
@@ -253,7 +324,9 @@ src/options/              parse -> evaluate -> render for the option command
   payoff.ts               breakeven, max loss, expiration scenarios
   evaluate.ts             checks, verdict, explanations (thresholds in THRESHOLDS)
 src/scanner/              crypto scanner: types, rules, normalize, analyze, render; command (scan CLI)
-src/providers/            http.ts (fetch client: timeout, budget, 429 retry); coingecko.ts (adapter)
+src/stocks/               US-stock scanner: types, rules (incl. universe), normalize, analyze, render, command
+src/providers/            http.ts (fetch client: timeout, budget, 429 retry); coingecko.ts, massive.ts
+                          (adapters); history-cache.ts (S6 crypto history cache)
 src/cli.ts                `option` and `scan` commands
 test/                     node:test suites (textbook values and hypothetical inputs)
 examples/                 clearly labelled hypothetical input

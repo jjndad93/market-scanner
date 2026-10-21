@@ -85,8 +85,13 @@ export interface ScanCommandDeps {
 /** Runs `scan <market> ...`. Returns the process exit code. */
 export async function runScanCommand(args: string[], deps: ScanCommandDeps): Promise<number> {
   const [market, ...rest] = args;
+  if (market === 'stocks') {
+    // Loaded on demand: the stock command reuses helpers from this module.
+    const { runStockScanCommand } = await import('../stocks/command.ts');
+    return runStockScanCommand(rest, deps);
+  }
   if (market !== 'crypto') {
-    deps.err(market === undefined ? 'Choose a market to scan.\n' : `Unknown market "${market}". Only "crypto" is available.\n`);
+    deps.err(market === undefined ? 'Choose a market to scan ("crypto" or "stocks").\n' : `Unknown market "${market}". Available: "crypto", "stocks".\n`);
     deps.err(SCAN_HELP);
     return 1;
   }
