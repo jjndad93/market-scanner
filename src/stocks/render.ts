@@ -54,6 +54,11 @@ export function renderStockReport(r: StockScanResult, rules: StockRules = STOCK_
   out.push(...wrap(partial
     ? `Universe: ${r.universe} tickers; ${r.passedFilters} passed all filters; ${r.excluded.length} excluded (${notEvaluated} not evaluated: bars not requested or failed). PARTIAL SCAN.`
     : `Universe: ${r.universe} tickers; ${r.passedFilters} passed filters; ${r.excluded.length} excluded.`, '  ', ''));
+  // Only the tickers that passed all filters; excluded or unevaluated tickers are not described here.
+  const ev = r.evaluatedSessions;
+  out.push(ev.latest === null
+    ? 'Latest session evaluated: none (no ticker passed all filters).'
+    : `Latest session evaluated: ${ev.earliest === ev.latest ? ev.latest : `${ev.earliest} to ${ev.latest} (differs by ticker)`}, for the ${ev.tickers} ticker(s) that passed all filters.`);
 
   if (r.movers.length === 0 && r.watchlist.length === 0) {
     out.push('', partial

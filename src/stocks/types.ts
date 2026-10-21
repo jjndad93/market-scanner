@@ -120,4 +120,6 @@ export interface StockScanResult {
   invalidBars: { symbol: string; count: number }[];
   /** Stocks whose bars were never obtained (live): failed or not requested. */
   notEvaluated: { requestFailed: number; notRequested: number };
+  /** Latest-session dates of the stocks that passed all filters (null when none did). */
+  evaluatedSessions: { tickers: number; earliest: string | null; latest: string | null };
 }

@@ -104,6 +104,7 @@ export function runStockScan(data: NormalizedStockDataset, now: Date, rules: Sto
   let passedFilters = 0;
   let notCandidates = 0;
   const notEvaluated = { requestFailed: 0, notRequested: 0 };
+  const sessionDates: string[] = []; // latest session of each stock that passed all filters
 
   for (const s of data.stocks) {
     if (counts.get(s.symbol)! > 1) {
@@ -119,6 +120,7 @@ export function runStockScan(data: NormalizedStockDataset, now: Date, rules: Sto
       continue;
     }
     passedFilters++;
+    sessionDates.push(m.lastDate);
     const kind = classifyStock(m, rules);
     if (kind === null) {
       notCandidates++;
@@ -142,5 +144,10 @@ export function runStockScan(data: NormalizedStockDataset, now: Date, rules: Sto
     excluded: excluded.sort((x, y) => (x.symbol < y.symbol ? -1 : x.symbol > y.symbol ? 1 : 0)),
     invalidBars: data.stocks.filter((s) => s.invalidBars > 0).map((s) => ({ symbol: s.symbol, count: s.invalidBars })).sort((x, y) => (x.symbol < y.symbol ? -1 : 1)),
     notEvaluated,
+    evaluatedSessions: {
+      tickers: sessionDates.length,
+      earliest: sessionDates.length > 0 ? sessionDates.reduce((a, b) => (b < a ? b : a)) : null,
+      latest: sessionDates.length > 0 ? sessionDates.reduce((a, b) => (b > a ? b : a)) : null,
+    },
   };
 }

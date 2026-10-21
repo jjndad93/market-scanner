@@ -129,6 +129,26 @@ test('fixture report: TEST DATA labels, honest caveats, malformed-bar note, line
   assert.ok(lines.every((l) => l.length <= 100), lines.find((l) => l.length > 100));
 });
 
+test('zero-candidate report still states the latest session evaluated, only for tickers that passed all filters', () => {
+  // Like the first live smoke test: two flat tickers evaluated, the rest never requested.
+  const r = scanOf([
+    { symbol: 'AAA', bars: bars() }, { symbol: 'BBB', bars: bars() },
+    { symbol: 'CCC', historyStatus: 'not_requested' },
+  ], LIVE);
+  assert.deepEqual([r.movers.length, r.watchlist.length, r.passedFilters], [0, 0, 2]);
+  assert.deepEqual(r.evaluatedSessions, { tickers: 2, earliest: '2026-10-20', latest: '2026-10-20' });
+  const report = renderStockReport(r);
+  assert.match(report, /^Latest session evaluated: 2026-10-20, for the 2 ticker\(s\) that passed all filters\.$/m);
+  assert.match(report, /No candidates met the evidence threshold among the evaluated tickers/);
+
+  // Different dates are shown as a range; an excluded (stale) ticker's date is not included.
+  const mixed = renderStockReport(scanOf([
+    { symbol: 'NEW', bars: bars() }, { symbol: 'OLD', bars: bars({ last: '2026-10-19' }) }, { symbol: 'STALE', bars: bars({ last: '2026-10-09' }) },
+  ]));
+  assert.match(mixed, /^Latest session evaluated: 2026-10-19 to 2026-10-20 \(differs by ticker\), for the 2 ticker\(s\) that passed all filters\.$/m);
+  assert.match(renderStockReport(scanOf([{ symbol: 'X', historyStatus: 'request_failed' }], LIVE)), /^Latest session evaluated: none \(no ticker passed all filters\)\.$/m);
+});
+
 test('live-shaped report: attribution, VERIFIED DATA, and partial coverage when bars were not obtained', () => {
   const r = scanOf([
     { symbol: 'A', bars: bars({ movePct: 9, volMult: 3 }) },
