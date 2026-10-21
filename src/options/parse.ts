@@ -214,7 +214,7 @@ export function parseContractText(text: string): ParseResult {
   const absent = <T>(key: Key): Evidence<T> => missing(`${LABELS[key]} not provided.`);
   const unreadable = <T>(key: Key, s: string, why = ''): Evidence<T> => {
     warnings.push(`Could not use ${LABELS[key]} "${s}"${why}; treated as missing.`);
-    return missing(`${LABELS[key]} "${s}" could not be read${why}.`);
+    return { ...missing<T>(`${LABELS[key]} "${s}" could not be read${why}.`), suppliedButInvalid: s };
   };
   const make = <T>(key: Key, value: T, asOf: string | null, party: 'user' | 'third', note?: string): Evidence<T> =>
     party === 'third'

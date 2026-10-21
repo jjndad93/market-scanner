@@ -22,6 +22,11 @@ export interface Evidence<T> {
   readonly note?: string;
   /** Set when the raw input could reasonably mean something else (e.g. "3" = 3% or 300%). */
   readonly ambiguity?: string;
+  /**
+   * Set on a `missing` value when the user DID supply text for it that could not be used (it
+   * holds that text), so an invalid input is never reported as if it had not been given.
+   */
+  readonly suppliedButInvalid?: string;
 }
 
 export const KIND_LABEL: Record<EvidenceKind, string> = {

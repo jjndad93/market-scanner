@@ -89,8 +89,9 @@ export async function applyLiveContext(contract: ContractInput, context: MarketC
   if ('reason' in calc) return unavailable(calc.reason, client.callsMade);
 
   const asOf = nyWallTimeToUtc(calc.latest, 16, 0).toISOString(); // the latest completed session's close
-  const historicalVol = calculated(calc.hv, HV_METHOD, asOf);
-  const trend = calculated(trendText(calc.trendPct, calc.from, calc.latest), `% change from the close ${LIVE_CONTEXT_SESSIONS} sessions earlier to the latest close, Massive end-of-day closes`, asOf);
+  const dated = `From --live-context: Massive end-of-day bars for ${symbol}, latest completed session ${calc.latest}.`;
+  const historicalVol = calculated(calc.hv, HV_METHOD, asOf, dated);
+  const trend = calculated(trendText(calc.trendPct, calc.from, calc.latest), `% change from the close ${LIVE_CONTEXT_SESSIONS} sessions earlier to the latest close, Massive end-of-day closes`, asOf, dated);
   const hvPasted = has(context.historicalVol);
   const trendPasted = has(context.trend);
   return {
@@ -101,6 +102,13 @@ export async function applyLiveContext(contract: ContractInput, context: MarketC
       pastedHv: hvPasted ? context.historicalVol.value : null, pastedTrend: trendPasted ? context.trend.value : null,
     },
   };
+}
+
+/** One sentence for the report header: what live data was, or was not, used. */
+export function liveContextHeader(r: LiveContextResult): string {
+  if (r.status === 'unavailable') return '--live-context was requested, but no live data was used (see LIVE CONTEXT at the end).';
+  const active = [r.hvRole === 'active' ? 'historical volatility' : null, r.trendRole === 'active' ? 'recent trend' : null].filter(Boolean);
+  return `--live-context fetched Massive end-of-day bars for ${r.symbol} (latest completed session ${r.latestSession}); ${active.length > 0 ? `${active.join(' and ')} ${active.length > 1 ? 'are' : 'is'} CALCULATED from them because nothing was pasted` : 'your pasted values stay active and the fetched figures are only a cross-check'} (see LIVE CONTEXT at the end).`;
 }
 
 /** Text section appended after the evaluation report. */

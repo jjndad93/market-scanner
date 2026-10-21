@@ -50,6 +50,10 @@ data is hypothetical or test data, the report says so prominently.
 
 Required: stock price, strike, expiration, and an option price (premium, or bid and ask).
 Everything else is optional. If something is missing, the report lists it instead of guessing.
+A required value you *supplied* but that can't be used, such as `Strike: abc`, an impossible
+date or a negative price, is reported as **invalid**, not missing. It shows the text you gave
+and why it was rejected, under "MISSING OR INVALID INFORMATION". Missing and invalid values
+both block the verdict (`INSUFFICIENT DATA`), and neither is ever treated as zero.
 
 ### What it reports
 
@@ -76,8 +80,10 @@ Everything else is optional. If something is missing, the report lists it instea
   accepted range is still used, and no rating means a contract is safe.
 - **Key numbers**, each tagged by provenance: `YOU PROVIDED`, `CALCULATED`, `THIRD-PARTY`
   (for example broker-reported IV or delta), `ESTIMATE` (model outputs and default
-  assumptions), `MISSING`. `VERIFIED DATA` is reserved for values fetched from a market-data
-  source in later stages.
+  assumptions), `MISSING`. With `--live-context`, historical volatility and trend values
+  derived from fetched end-of-day bars are `CALCULATED`, with a note giving the latest
+  completed session date. The report header then says what live data was used, instead of
+  "No live market data was fetched".
 - **Checks**: spread, open interest and volume, quote freshness, entry premium vs. bid/ask, time
   decay, breakeven compared with a typical move at historical volatility, delta, IV compared with
   historical volatility, earnings and dividends before expiration.

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { evaluateCall } from './options/evaluate.ts';
-import { applyLiveContext, type LiveContextResult, renderLiveContext } from './options/live-context.ts';
+import { applyLiveContext, type LiveContextResult, liveContextHeader, renderLiveContext } from './options/live-context.ts';
 import { PASTE_TEMPLATE, parseContractText } from './options/parse.ts';
 import { renderEvaluation } from './options/render.ts';
 import { runScanCommand } from './scanner/command.ts';
@@ -103,6 +103,7 @@ async function runOption(args: string[]): Promise<number> {
       parseWarnings: parsed.warnings,
       unrecognized: parsed.unrecognized,
       markedAsTestData: parsed.markedAsTestData,
+      ...(live ? { liveContext: liveContextHeader(live) } : {}),
     }));
     if (live) console.log(`\n${renderLiveContext(live)}`);
   }

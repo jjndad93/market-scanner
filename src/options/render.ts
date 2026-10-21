@@ -8,6 +8,8 @@ export interface RenderContext {
   parseWarnings: string[];
   unrecognized: string[];
   markedAsTestData: boolean;
+  /** Set only with --live-context: one sentence on what live data was (or was not) used. */
+  liveContext?: string;
 }
 
 const WIDTH = 100;
@@ -79,7 +81,9 @@ export function renderEvaluation(ev: Evaluation, ctx: RenderContext): string {
   const section = (title: string) => out.push('', title, '-'.repeat(title.length));
 
   out.push(rule, `OPTION EVALUATION: ${ev.label}`, `Evaluated: ${ev.evaluatedAt}`);
-  out.push(...wrap(`Input: ${ctx.inputDescription}. Every number below comes from that input or is calculated from it. No live market data was fetched (Stage 1 is offline), and nothing was independently verified.`, '', ''));
+  out.push(...wrap(ctx.liveContext === undefined
+    ? `Input: ${ctx.inputDescription}. Every number below comes from that input or is calculated from it. No live market data was fetched (live context is opt-in with --live-context), and nothing was independently verified.`
+    : `Input: ${ctx.inputDescription}. Every number below comes from that input or is calculated from it, except as stated here: ${ctx.liveContext} Nothing was independently verified.`, '', ''));
   if (ctx.markedAsTestData) out.push('', '!! THIS INPUT IS MARKED AS HYPOTHETICAL / TEST DATA. These are not real market quotes. !!');
   out.push(rule);
 
@@ -97,8 +101,13 @@ export function renderEvaluation(ev: Evaluation, ctx: RenderContext): string {
     out.push('', ...wrap('Data reliability: no issues found in the checks run (the inputs are still unverified).', '  ', '  '));
   }
 
-  if (ev.missingRequired.length > 0 || ev.missingHelpful.length > 0) {
-    section('MISSING INFORMATION');
+  const invalid = ev.invalidRequired ?? [];
+  if (invalid.length > 0 || ev.missingRequired.length > 0 || ev.missingHelpful.length > 0) {
+    section(invalid.length > 0 ? 'MISSING OR INVALID INFORMATION' : 'MISSING INFORMATION');
+    if (invalid.length > 0) {
+      out.push('  Supplied but could not be used (correct these; they are not treated as zero):');
+      for (const m of invalid) out.push(...wrap(m, '      ', '    - '));
+    }
     if (ev.missingRequired.length > 0) {
       out.push('  Required before this contract can be assessed:');
       for (const m of ev.missingRequired) out.push(...wrap(m, '      ', '    - '));

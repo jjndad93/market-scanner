@@ -105,6 +105,8 @@ export interface Evaluation {
   /** Overpriced / underpriced / in line / cannot assess. */
   valuation: string;
   missingRequired: string[];
+  /** Required values that were supplied but could not be used (present only when non-empty). */
+  invalidRequired?: string[];
   missingHelpful: string[];
   metrics: MetricLine[];
   checks: Check[];
@@ -196,9 +198,17 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   // ---- Required inputs ------------------------------------------------------------------
   if (contract.optionType.value === 'put') blockers.push('This contract is a put. The Stage 1 evaluator only handles calls.');
   if (contract.optionType.kind === 'estimate') warnings.push('Option type was not stated, so it was assumed to be a CALL.');
-  if (S === null) missingRequired.push('Underlying stock price (e.g. "Stock price: 123.45")');
-  if (K === null) missingRequired.push('Strike price (e.g. "Strike: 130")');
-  if (expiration === null) missingRequired.push('Expiration date (e.g. "Expiration: 2026-12-18")');
+  // A required value that was supplied but could not be used is "invalid", not "missing": the
+  // user gave it, so they need to correct it rather than add it. Neither is ever treated as zero.
+  const invalidRequired: string[] = [];
+  const requireValue = (e: Evidence<unknown>, missingText: string, example: string) => {
+    if (e.value !== null) return;
+    if (e.suppliedButInvalid !== undefined) invalidRequired.push(`${e.note} Correct it (e.g. ${example}).`);
+    else missingRequired.push(missingText);
+  };
+  requireValue(contract.stockPrice, 'Underlying stock price (e.g. "Stock price: 123.45")', '"Stock price: 123.45"');
+  requireValue(contract.strike, 'Strike price (e.g. "Strike: 130")', '"Strike: 130"');
+  requireValue(contract.expiration, 'Expiration date (e.g. "Expiration: 2026-12-18")', '"Expiration: 2026-12-18"');
 
   const bid = contract.bid.value;
   const ask = contract.ask.value;
@@ -221,8 +231,14 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   else if (has(contract.mark)) cost = withNote(contract.mark, 'No premium or ask given; using the mark/mid. Your actual fill may be higher.');
   else if (has(contract.last)) cost = withNote(contract.last, 'Only a last-trade price was given. It may be stale and may not be what you would pay now.');
   else {
-    cost = missing('No premium, ask, mark or last price was provided.');
-    missingRequired.push('Option price: the premium you would pay, or the bid and ask');
+    const unusable = [contract.premium, contract.ask, contract.mark, contract.last, contract.bid].filter((e) => e.suppliedButInvalid !== undefined);
+    if (unusable.length > 0) {
+      cost = missing('The option price(s) supplied could not be used.');
+      invalidRequired.push(`Option price: ${unusable.map((e) => e.note!.replace(/\.$/, '')).join('; ')}. Correct it, or give the premium you would pay (e.g. "Premium: 2.45").`);
+    } else {
+      cost = missing('No premium, ask, mark or last price was provided.');
+      missingRequired.push('Option price: the premium you would pay, or the bid and ask');
+    }
   }
   if (cost.value === 0) blockers.push('The option price is zero, which cannot be evaluated. Check the quote.');
   const costPerShare = cost.value;
@@ -607,7 +623,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     } else {
       valuation = 'Cannot assess whether the option is overpriced or underpriced: no historical (realized) volatility was provided to compare against.';
       addCheck({ id: 'valuation', title: 'Price vs. recent volatility', status: 'unknown', failMeans: 'weak', summary: 'historical volatility not provided', detail: valuation });
-      missingHelpful.push('Historical volatility of the stock (e.g. "Historical volatility: 30%", the 20- or 30-day realized volatility) to judge whether the option is expensive');
+      missingHelpful.push('Historical volatility of the stock (e.g. "Historical volatility: 30%", the 20- or 30-day realized volatility, or use --live-context to calculate it from end-of-day bars) to judge whether the option is expensive');
     }
 
     // Broker IV cross-check: large differences point to stale or inconsistent inputs.
@@ -675,7 +691,7 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
   }
 
   metric('Catalysts & context', 'Recent trend', context.trend, 'text');
-  if (!has(context.trend)) missingHelpful.push('Recent trend of the stock (the scanner will supply this in a later stage; for now paste e.g. "Trend: up 6% over 20 trading days")');
+  if (!has(context.trend)) missingHelpful.push('Recent trend of the stock (paste e.g. "Trend: up 6% over 20 trading days", or use --live-context to calculate it from end-of-day bars)');
 
   metric('Model inputs', 'Risk-free rate', rE, 'pct');
   metric('Model inputs', 'Dividend yield', qE, 'pct');
@@ -748,10 +764,10 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     reasons: [...dataIssues.values()],
   };
 
-  if (missingRequired.length > 0 || blockers.length > 0 || model === null) {
+  if (missingRequired.length > 0 || invalidRequired.length > 0 || blockers.length > 0 || model === null) {
     verdict = 'INSUFFICIENT_DATA';
     verdictSummary = 'Cannot assess this contract reliably from the information provided.';
-    verdictReasons.push(...blockers, ...missingRequired.map((m) => `Missing: ${m}`));
+    verdictReasons.push(...blockers, ...invalidRequired.map((m) => `Invalid: ${m}`), ...missingRequired.map((m) => `Missing: ${m}`));
   } else if (riskFails.length > 0) {
     verdict = 'TOO_RISKY';
     verdictSummary = 'Too risky: the evidence (breakeven far beyond a typical move, or a very low delta) indicates a low chance of recovering the premium under the model\'s assumptions. That is not a certainty, but the evidence weighs heavily against it.';
@@ -796,6 +812,8 @@ export function evaluateCall(contract: ContractInput, context: MarketContext, op
     dataReliability,
     valuation,
     missingRequired,
+    // Present only when something was invalid, so results for valid input are unchanged.
+    ...(invalidRequired.length > 0 ? { invalidRequired } : {}),
     missingHelpful,
     metrics,
     checks,
