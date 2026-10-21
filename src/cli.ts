@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { evaluateCall } from './options/evaluate.ts';
+import { applyLiveContext, type LiveContextResult, renderLiveContext } from './options/live-context.ts';
 import { PASTE_TEMPLATE, parseContractText } from './options/parse.ts';
 import { renderEvaluation } from './options/render.ts';
 import { runScanCommand } from './scanner/command.ts';
@@ -23,6 +24,10 @@ Option flags:
   --now <ISO time>    evaluate as of this time instead of now (e.g. 2026-10-20T14:30:00Z)
   --json              print the structured result as JSON
   --template          print an input template and exit
+  --live-context      opt-in: one Massive request (needs POLYGON_API_KEY) for the underlying's
+                      end-of-day bars, to calculate 20-session historical volatility and trend.
+                      Pasted values stay active; fetched values only fill empty fields and are
+                      otherwise shown as a cross-check. Not combinable with --now.
 `;
 
 async function readStdin(): Promise<string> {
@@ -41,8 +46,13 @@ async function runOption(args: string[]): Promise<number> {
       now: { type: 'string' },
       json: { type: 'boolean', default: false },
       template: { type: 'boolean', default: false },
+      'live-context': { type: 'boolean', default: false },
     },
   });
+  if (values['live-context'] && values.now) {
+    console.error('--now cannot be combined with --live-context: live context uses the latest completed session, so the evaluation must use the current time. No request was made.');
+    return 1;
+  }
 
   if (values.template) {
     console.log(PASTE_TEMPLATE);
@@ -76,9 +86,17 @@ async function runOption(args: string[]): Promise<number> {
   }
 
   const parsed = parseContractText(text.replace(/^﻿/, ''));
-  const evaluation = evaluateCall(parsed.contract, parsed.context, { now });
+  // Stage 4 opt-in only; without --live-context nothing below touches the network or the output.
+  let context = parsed.context;
+  let live: LiveContextResult | null = null;
+  if (values['live-context']) {
+    ({ context, result: live } = await applyLiveContext(parsed.contract, parsed.context, {
+      env: process.env, fetch: (url, init) => globalThis.fetch(url, init), clock: () => new Date(),
+    }));
+  }
+  const evaluation = evaluateCall(parsed.contract, context, { now });
   if (values.json) {
-    console.log(JSON.stringify({ input: parsed, evaluation }, null, 2));
+    console.log(JSON.stringify(live ? { input: parsed, evaluation, liveContext: live } : { input: parsed, evaluation }, null, 2));
   } else {
     console.log(renderEvaluation(evaluation, {
       inputDescription,
@@ -86,6 +104,7 @@ async function runOption(args: string[]): Promise<number> {
       unrecognized: parsed.unrecognized,
       markedAsTestData: parsed.markedAsTestData,
     }));
+    if (live) console.log(`\n${renderLiveContext(live)}`);
   }
   return 0;
 }

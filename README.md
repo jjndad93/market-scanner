@@ -41,6 +41,7 @@ node src/cli.ts option --file my-contract.txt
 Get-Content my-contract.txt | node src/cli.ts option
 node src/cli.ts option --template      # every field you can paste
 node src/cli.ts option --file my-contract.txt --json
+node src/cli.ts option --file my-contract.txt --live-context   # opt-in: 1 Massive request
 ```
 
 A symbol line works instead of separate fields: `XMPL Dec 18 2026 55 Call` or the OCC
@@ -332,14 +333,28 @@ test/                     node:test suites (textbook values and hypothetical inp
 examples/                 clearly labelled hypothetical input
 ```
 
-### How the option evaluator joins the morning scanner later
+### Live market context for the option evaluator (Stage 4, opt-in)
 
 `evaluateCall(contract, context)` takes a `ContractInput` (the quote) and a `MarketContext`
-(rate, dividends, earnings date, historical volatility, trend). Today both are filled from
-pasted text and tagged `YOU PROVIDED`. From Stage 2 on, the scanner's data providers can fill
-`MarketContext` (historical volatility from daily bars, earnings from a calendar API) with
-`VERIFIED DATA` evidence. The `option` command then automatically gets better context,
-and the morning report and the option command share one data layer and one evidence model.
+(rate, dividends, earnings date, historical volatility, trend). By default both are filled
+only from pasted text and tagged `YOU PROVIDED`, and the `option` command never uses the
+network.
+
+`--live-context` makes **one** request to Massive (the same provider and `POLYGON_API_KEY` as
+`scan stocks`) for the contract's `Underlying` ticker. It never retries. From the end-of-day
+bars it calculates two values, both tagged `CALCULATED` with the latest completed session
+date:
+
+- **Historical volatility:** the sample standard deviation of the last 20 daily log returns,
+  x sqrt(252).
+- **Recent trend:** the % change from the close 20 sessions earlier to the latest close.
+
+**Pasted values always stay the active input.** A fetched value only fills a field you left
+empty. Otherwise it's shown below the report as a cross-check, next to your value. It never
+replaces it. Without a key, or after a failed or rate-limited request or with too little,
+gapped or stale history, the inputs stay unchanged and the report says why. `--live-context`
+can't be combined with `--now`, and `--json` adds a `liveContext` object. Earnings and
+dividend dates are not fetched. This path has not been run against live data yet.
 
 ## Safety rules built into this project
 
