@@ -90,8 +90,12 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
     const { runStockScanCommand } = await import('../stocks/command.ts');
     return runStockScanCommand(rest, deps);
   }
+  if (market === 'options') {
+    const { runOptionScanCommand } = await import('../options-scan/command.ts');
+    return runOptionScanCommand(rest, deps);
+  }
   if (market !== 'crypto') {
-    deps.err(market === undefined ? 'Choose a market to scan ("crypto" or "stocks").\n' : `Unknown market "${market}". Available: "crypto", "stocks".\n`);
+    deps.err(market === undefined ? 'Choose a market to scan ("crypto", "stocks" or "options").\n' : `Unknown market "${market}". Available: "crypto", "stocks", "options".\n`);
     deps.err(SCAN_HELP);
     return 1;
   }

@@ -1,0 +1,520 @@
+{
+  "dataset": {
+    "kind": "synthetic",
+    "label": "options-scan synthetic v1",
+    "source": "Synthetic option-chain snapshots (generated test data)",
+    "asOf": "2026-10-21T13:30:00Z"
+  },
+  "chains": [
+    {
+      "underlying": "SYNA",
+      "response": {
+        "status": "OK",
+        "request_id": "synthetic",
+        "results": [
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 105,
+              "ticker": "O:SYNA261120C00105000"
+            },
+            "day": {
+              "close": 2.45,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 2.4,
+              "ask": 2.5,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 2.5,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 100,
+              "ticker": "O:SYNA261120C00100000"
+            },
+            "day": {
+              "volume": 1500
+            },
+            "last_quote": {
+              "bid": 4.5,
+              "ask": 4.6,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 4.6,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 4000,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 110,
+              "ticker": "O:SYNA261120C00110000"
+            },
+            "day": {
+              "close": 1.125,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 1.1,
+              "ask": 1.15,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 1.15,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 900,
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 80,
+              "ticker": "O:SYNA261120C00080000"
+            },
+            "day": {
+              "close": 14.95,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 14.9,
+              "ask": 15,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 15,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-12-18",
+              "shares_per_contract": 100,
+              "strike_price": 120,
+              "ticker": "O:SYNA261218C00120000"
+            },
+            "day": {
+              "close": 0.47500000000000003,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 0.4,
+              "ask": 0.55,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 0.55,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 102,
+              "ticker": "O:SYNA261120C00102000"
+            },
+            "day": {
+              "close": 2.9,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 3,
+              "ask": 2.8,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 2.8,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 104,
+              "ticker": "O:SYNA261120C00104000"
+            },
+            "day": {
+              "close": 2.6500000000000004,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 2.6,
+              "ask": 2.7,
+              "last_updated": 1791662400000000000
+            },
+            "last_trade": {
+              "price": 2.7,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 115,
+              "ticker": "O:SYNA261120C00115000"
+            },
+            "day": {
+              "close": 0.72,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 0.7,
+              "ask": 0.74,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 0.74,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 40,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-10-16",
+              "shares_per_contract": 100,
+              "strike_price": 100,
+              "ticker": "O:SYNA261016C00100000"
+            },
+            "day": {
+              "close": 0.11,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 0.1,
+              "ask": 0.12,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 0.12,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-10-23",
+              "shares_per_contract": 100,
+              "strike_price": 101,
+              "ticker": "O:SYNA261023C00101000"
+            },
+            "day": {
+              "close": 1.025,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 1,
+              "ask": 1.05,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 1.05,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 106,
+              "ticker": "O:SYNA261120C00106000"
+            },
+            "day": {
+              "close": null,
+              "volume": 750
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 107,
+              "ticker": "O:SYNA261120C00107000"
+            },
+            "day": {
+              "close": 0,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 0,
+              "ask": 0,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 0,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "put",
+              "exercise_style": "american",
+              "expiration_date": "2026-11-20",
+              "shares_per_contract": 100,
+              "strike_price": 95,
+              "ticker": "O:SYNA261120P00095000"
+            },
+            "day": {
+              "close": 2.1500000000000004,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 2.1,
+              "ask": 2.2,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 2.2,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 2500,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          },
+          {
+            "details": {
+              "contract_type": "call",
+              "expiration_date": "2026-11-20",
+              "ticker": "O:SYNA261120C00999000"
+            },
+            "underlying_asset": {
+              "price": 100,
+              "ticker": "SYNA"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "underlying": "SYNB",
+      "response": {
+        "status": "OK",
+        "request_id": "synthetic",
+        "results": [
+          {
+            "details": {
+              "contract_type": "call",
+              "exercise_style": "american",
+              "expiration_date": "2026-12-18",
+              "shares_per_contract": 100,
+              "strike_price": 42,
+              "ticker": "O:SYNB261218C00042000"
+            },
+            "day": {
+              "close": 1.85,
+              "volume": 750
+            },
+            "last_quote": {
+              "bid": 1.8,
+              "ask": 1.9,
+              "last_updated": 1792526400000000000
+            },
+            "last_trade": {
+              "price": 1.9,
+              "sip_timestamp": 1792526340000000000
+            },
+            "open_interest": 600,
+            "implied_volatility": 0.32,
+            "greeks": {
+              "delta": 0.45,
+              "gamma": 0.04,
+              "theta": -0.05,
+              "vega": 0.12
+            },
+            "underlying_asset": {
+              "price": 40,
+              "ticker": "SYNB"
+            }
+          }
+        ],
+        "next_url": "https://api.example.test/next-page"
+      }
+    },
+    {
+      "underlying": "SYNC",
+      "response": {
+        "status": "OK",
+        "results": "not-an-array"
+      }
+    }
+  ]
+}

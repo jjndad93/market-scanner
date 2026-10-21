@@ -315,6 +315,49 @@ for the first 2 tickers. Check the following:
 
 Don't rerun it automatically or raise the limit without a separate decision.
 
+## US options discovery (Stage 6)
+
+```
+node src/cli.ts scan options                    # bundled synthetic fixture; never uses the network
+node src/cli.ts scan options --json             # structured result
+node src/cli.ts scan options --live --symbols AAPL,MSFT --max-requests 2   # needs a paid options plan
+```
+
+**Provider limitation.** Live discovery uses Massive's option-chain snapshot
+(`/v3/snapshot/options/{underlying}`): bid/ask, last trade, volume, open interest, IV and
+Greeks per contract. According to Massive's pricing page (checked 2026-10-21), the **free
+Options Basic plan does not include** Snapshot, quotes (bid/ask), Greeks/IV or open interest.
+Snapshot starts at Options Starter, and the page lists bid/ask quotes only on Options
+Advanced. Whether a Starter snapshot carries a delayed bid/ask hasn't been verified. On a plan
+without access, the first request fails (HTTP 401/403) and the run stops. The report then says
+exactly which capability is missing, and nothing is filled in. **The live path has not been run
+against live data.**
+
+**What it does.**
+
+1. **Requests:** one request per underlying. The default list is the stock scanner's 20
+   tickers, or use `--symbols`. Expirations requested are 7-60 days out, with up to 250
+   contracts per underlying. There's no pagination yet, and the report says when a page
+   was cut off.
+2. **Validation:** each contract is checked, with missing fields kept missing.
+3. **Exclusions,** each with a recorded reason:
+   - incomplete records, expired contracts, and those under 7 days to expiration
+   - missing, crossed, zero-offer or stale (over 4 days, undated, or future-dated) quotes
+   - spreads wider than 10% of mid
+   - open interest under 100, when it's supplied
+
+   The spread, open-interest and expiration limits are the option evaluator's own thresholds.
+4. **Evaluation:** eligible **calls** go through the existing evaluator, unchanged. Provider
+   quotes are tagged `VERIFIED DATA` and provider IV and Greeks `THIRD-PARTY`. Missing fields
+   stay `MISSING`, and no premium or context is invented. Eligible **puts** are listed as not
+   evaluated, because the evaluator handles calls only.
+5. **Ranking:** contracts are ordered by evaluator verdict, then data reliability, tighter
+   spread and higher open interest. This is a rule-based order, not a forecast, and
+   `INSUFFICIENT DATA` contracts are listed separately, not ranked.
+
+Without pasted context (historical volatility, earnings and dividend dates), the evaluator
+keeps verdicts cautious and says what's missing. No contract is called safe or profitable.
+
 ## Tests
 
 ```

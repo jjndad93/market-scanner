@@ -10,8 +10,9 @@ const HELP = `market-scanner - research tool (no brokerage connection, no orders
 
 Commands:
   option   Evaluate a call option from pasted contract details (works offline)
-  scan     Morning scan: "scan crypto" (CoinGecko) or "scan stocks" (US stocks, Massive
-           end-of-day bars). Synthetic fixture by default; --live for real data.
+  scan     Morning scan: "scan crypto" (CoinGecko), "scan stocks" (US stocks, Massive
+           end-of-day bars) or "scan options" (US option chains, Massive Snapshot; needs a
+           paid options plan). Synthetic fixture by default; --live for real data.
 
 Option usage:
   node src/cli.ts option --file contract.txt
