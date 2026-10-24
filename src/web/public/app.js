@@ -172,7 +172,8 @@ function riskCell(row) {
 function rowView({ row, afford }) {
   const fit = afford.passesBudget && afford.passesUnitPrice;
   return el('tr', {},
-    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : row.symbol)),
+    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : row.symbol),
+      ...(state.leadById?.has(row.id) ? leadNotes(state.leadById.get(row.id)) : [])),
     el('td', {}, el('span', { class: `chip ${row.signal.category === 'Mover' ? 'mover' : row.signal.category === 'Watchlist' ? 'watch' : 'dim'}` }, row.signal.category ?? STATUS_LABEL[row.signal.status]),
       el('div', { class: 'sym' }, [row.signal.category ? STATUS_LABEL[row.signal.status] : null, row.signal.score === null ? null : `score ${row.signal.score}/${row.signal.maxScore}`, row.volumeMultiple === null ? null : `${row.volumeMultiple.toFixed(2)}x volume`].filter(Boolean).join(' · '))),
     el('td', { class: 'num' }, price(row.unitPrice)),
@@ -182,7 +183,7 @@ function rowView({ row, afford }) {
       el('div', { class: 'sym' }, `${afford.maxUnits.toLocaleString()} units ≈ ${money(afford.totalCost)} before fees`),
       afford.reason ? el('div', { class: 'sym' }, afford.reason) : null),
     el('td', { class: 'row-actions' },
-      el('div', { class: 'action-line' }, newsButton(row), wtbButton(row)),
+      el('div', { class: 'action-line' }, newsButton(row), wtbButton(row), snapshotButton(row)),
       row.why.length ? el('details', {}, el('summary', {}, 'Why'), el('ul', {}, ...row.why.map((w) => el('li', {}, w)))) : null,
       el('details', {}, el('summary', {}, 'Category & volatility'),
         el('div', { class: 'more' }, classificationCell(row.classification), riskCell(row),
@@ -332,6 +333,63 @@ function newsPanelRow(row) {
   return el('tr', { class: 'news-row' }, el('td', { colspan: '6' }, body));
 }
 
+// ---- save to the Asset Snapshot Log ----------------------------------------------------------------
+// Opens your Snapshot Log (a claude.ai page) with this row's numbers in the link, so its form is
+// pre-filled and you only click Save there. Nothing is sent anywhere else and no API request is made.
+// The numbers ride in the link's #fragment, which browsers never send to a server.
+
+const SNAPSHOT_LOG_URL = 'https://claude.ai/artifact/LHSo3rMd39sMP9R71K1MJ8';
+
+function snapshotPayload(row) {
+  const r = row.risk;
+  const num = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : null);
+  // Market cap from 24h volume and turnover (volume / market cap), both from the same provider snapshot.
+  const mcap = row.market === 'crypto' && num(row.volumeUsd) !== null && num(r.turnoverPct) ? row.volumeUsd / (r.turnoverPct / 100) : null;
+  const w = state.wtb.get(row.key)?.data?.result;
+  const exchanges = w ? [...w.cex, ...w.dex].slice(0, 15).map((v) => `${v.exchange}${v.pairs.length ? ` ${v.pairs[0]}` : ''}`) : [];
+  const asOf = row.priceAsOf ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(row.priceAsOf) ? `${row.priceAsOf}T16:00:00-05:00` : row.priceAsOf) : new Date();
+  const pad = (x) => String(x).padStart(2, '0');
+  const note = [
+    'From Market Scanner',
+    row.signal.category ? `${row.signal.category} ${row.signal.score}/${row.signal.maxScore}` : STATUS_LABEL[row.signal.status],
+    row.market === 'stocks' && num(row.change.long.value) !== null ? `5d ${pct(row.change.long.value)}` : null,
+  ].filter(Boolean).join(', ');
+  // Everything else the scanner knows about this row, as "label: value" pairs (the Snapshot Log's details field).
+  const lead = state.leadById?.get(row.id);
+  const details = [
+    row.signal.score !== null ? `Signal: ${row.signal.category ?? STATUS_LABEL[row.signal.status]} (evidence ${row.signal.score}/${row.signal.maxScore})` : `Signal: ${STATUS_LABEL[row.signal.status]}`,
+    row.classification ? `Category: ${row.classification.label}` : null,
+    row.market === 'crypto' && num(r.range24hPct) !== null ? `24h range: ${r.range24hPct.toFixed(1)}%` : null,
+    row.market === 'crypto' && num(r.fromHigh24hPct) !== null ? `From 24h high: ${pct(r.fromHigh24hPct)}` : null,
+    row.market === 'crypto' && num(r.athChangePct) !== null ? `From all-time high: ${pct(r.athChangePct)}` : null,
+    row.market === 'crypto' && num(r.turnoverPct) !== null ? `Turnover: ${r.turnoverPct.toFixed(1)}% of market cap` : null,
+    ...(lead?.explanation?.warnings ?? []).map((w) => `Caution: ${w.text}`),
+    ...r.flags.map((f) => `Flag: ${f}`),
+  ].filter(Boolean).join('; ').slice(0, 1000);
+  return {
+    a: row.symbol, k: row.market === 'stocks' ? 'stock' : 'crypto',
+    p: num(row.unitPrice), v: num(row.volumeUsd), r: num(row.volumeMultiple) === null ? null : Math.round(row.volumeMultiple * 100) / 100, m: mcap === null ? null : Math.round(mcap),
+    c: num(row.change.short.value), w: row.market === 'crypto' ? num(row.change.long.value) : null,
+    e: exchanges.join(', '),
+    d: `${asOf.getFullYear()}-${pad(asOf.getMonth() + 1)}-${pad(asOf.getDate())}`,
+    t: row.market === 'stocks' ? '16:00' : `${pad(asOf.getHours())}:${pad(asOf.getMinutes())}`,
+    n: note,
+    x: details,
+  };
+}
+
+/** base64url of the UTF-8 JSON: only letters, digits, - and _ (the characters a claude.ai link's #fragment keeps). */
+function snapshotLink(row) {
+  const json = JSON.stringify(snapshotPayload(row));
+  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${SNAPSHOT_LOG_URL}#add~${b64}`;
+}
+
+function snapshotButton(row) {
+  if (row.dataKind === 'test_data') return el('span', { class: 'sym', title: 'Run a live scan to save real numbers' }, 'Save to Snapshot Log (live scans only)');
+  return el('a', { class: 'linkish', href: snapshotLink(row), target: '_blank', rel: 'noopener noreferrer', title: 'Opens your Asset Snapshot Log with these numbers filled in' }, 'Save to Snapshot Log ↗');
+}
+
 // ---- where to buy -------------------------------------------------------------------------------
 // Opened per asset by the user. Crypto (live) spends one CoinGecko request after a confirmation;
 // cached results (up to an hour) are free. Stocks never make a request. Exchange names and links
@@ -444,52 +502,55 @@ function wtbPanelRow(row) {
 // From the scan result only: tiers by evidence strength, each with why it was surfaced and what
 // limits the evidence. Informational; scores and the table below are unchanged.
 
-const TIER = {
-  highPriority: ['High-priority research candidates', 'A large price move and unusual volume against a stable baseline of its own. Not a forecast.'],
-  watchlist: ['Watchlist', 'Some noteworthy activity, with weaker or incomplete evidence.'],
-  insufficientData: ['Insufficient data', 'Activity in the market snapshot, but not enough reliable data to rank it.'],
-};
-const DISCOVERY_STATUS = { shortlisted: 'on the scanner shortlist', over_display_limit: 'qualified, beyond the display limit', below_threshold: 'not on the shortlist', not_evaluated: 'not evaluated by the scanner' };
 
-function discoveryEntry(e) {
-  // Plain English first, from the scan's own explanation (src/scanner/lead-quality.ts): the reason,
-  // then every warning in priority order (or the next step when there is none). The scanner's
-  // exact evidence and caveats follow, unchanged.
-  // Then, only after a CoinMarketCap cross-check was run on this scan, that check's warnings for this
-  // lead (looked up by the lead's unique id; the server decided them).
+/**
+ * The scan's own warnings for one coin, in plain English (src/scanner/lead-quality.ts): every caution
+ * in priority order, then (only after a CoinMarketCap cross-check of this scan) that check's warnings.
+ * Shown under the coin in the table, and in the "moved but not checked" list.
+ */
+function leadNotes(e) {
   const x = e.explanation;
   const second = leadCrossCheckWarnings(e, state.cmc?.data, state.last?.result?.evaluatedAt);
-  return el('li', { class: 'lead' },
-    el('div', {}, el('span', { class: 'name' }, e.name), ' ', el('span', { class: 'sym' }, `${e.symbol} · ${e.id} · ${DISCOVERY_STATUS[e.status]}`)),
-    x ? el('p', { class: 'plain' }, x.reason) : null,
+  return [
     x && x.warnings.length ? el('ul', { class: 'plain-warnings' }, ...x.warnings.map((w) => el('li', { class: 'plain-caution' }, `Caution: ${w.text}`))) : null,
-    x && x.nextStep ? el('p', { class: 'plain-next' }, x.nextStep) : null,
     second.length ? el('ul', { class: 'plain-warnings' }, ...second.map((w) => el('li', { class: 'plain-caution' }, `Second source: ${w.text}`))) : null,
-    el('details', {}, el('summary', {}, 'Evidence'),
-      el('ul', { class: 'notes' }, ...e.reasons.map((x) => el('li', {}, x))),
-      e.caveats.length ? el('ul', { class: 'notes caveats' }, ...e.caveats.map((x) => el('li', { class: 'flag' }, x))) : null));
+  ];
 }
 
+/** One coin the scanner could not evaluate (too little or unreliable data): reason, cautions, evidence. */
+function discoveryEntry(e) {
+  const x = e.explanation;
+  return el('li', { class: 'lead' },
+    el('div', {}, el('span', { class: 'name' }, e.name), ' ', el('span', { class: 'sym' }, `${e.symbol} · ${e.id} · ${pct(e.change24hPct)} 24h`)),
+    x ? el('p', { class: 'plain' }, x.reason) : null,
+    ...leadNotes(e),
+    el('details', {}, el('summary', {}, 'Evidence'),
+      el('ul', { class: 'notes' }, ...e.reasons.map((r) => el('li', {}, r))),
+      e.caveats.length ? el('ul', { class: 'notes caveats' }, ...e.caveats.map((c) => el('li', { class: 'flag' }, c))) : null));
+}
+
+/**
+ * What the table cannot show: coins that moved but could not be checked (folded), the scan's
+ * coverage notes, and the CoinMarketCap cross-check. Coins the scanner did evaluate (high-priority
+ * and watchlist) are in the table above, with their cautions under the name.
+ */
 function discoveryView(d, coverageShown) {
-  const box = el('div', { class: 'discovery' }, el('h3', {}, 'Research leads (discovery)'));
-  for (const key of ['highPriority', 'watchlist', 'insufficientData']) {
-    const [title, blurb] = TIER[key];
-    const list = d[key].filter((e) => keepMove(e.change24hPct));
-    box.append(el('details', { class: 'section', open: key === 'highPriority' ? '' : null },
-      el('summary', {}, `${title} (${list.length})`),
-      el('p', { class: 'muted small' }, blurb),
-      list.length ? el('ul', { class: 'leads' }, ...list.map(discoveryEntry)) : el('p', { class: 'empty' }, 'None in this scan.')));
-  }
+  const box = el('div', { class: 'discovery' });
+  const list = d.insufficientData.filter((e) => keepMove(e.change24hPct));
   const c = d.coverage;
   const notes = c.notes.flatMap((n) => {
     if (!coverageShown) return [n];
     if (/ passed every filter and were evaluated against their own volume baseline\.$/.test(n)) return []; // the Coverage line states this count
-    if (n.startsWith('Incomplete scan:')) return ['Eligible assets whose history was not obtained (see Coverage above) are listed under Insufficient data if they showed snapshot activity; the rest were not evaluated.'];
+    if (n.startsWith('Incomplete scan:')) return ['Eligible assets whose history was not obtained (see Coverage above) are listed here if they showed snapshot activity; the rest were not evaluated.'];
     return [n];
   });
-  box.append(el('ul', { class: 'notes' },
-    el('li', {}, `${c.withActivity} asset(s) showed snapshot activity; ${c.withActivityNotEvaluated} of them could not be evaluated for lack of reliable data.`),
-    ...notes.map((n) => el('li', {}, n))));
+  box.append(el('details', { class: 'section' },
+    el('summary', {}, `Moved but not checked (${list.length})`),
+    el('p', { class: 'muted small' }, 'Activity in the market snapshot, but not enough reliable data for the scanner to evaluate it. Not in the table above.'),
+    list.length ? el('ul', { class: 'leads' }, ...list.map(discoveryEntry)) : el('p', { class: 'empty' }, 'None in this scan.'),
+    el('ul', { class: 'notes' },
+      el('li', {}, `${c.withActivity} asset(s) showed snapshot activity; ${c.withActivityNotEvaluated} of them could not be evaluated for lack of reliable data.`),
+      ...notes.map((n) => el('li', {}, n)))));
   box.append(cmcView());
   return box;
 }
@@ -554,9 +615,9 @@ function cmcLead(x, attribution) {
 
 function cmcView() {
   const box = el('div', { class: 'cmc' }, el('h4', {}, 'Second source: CoinMarketCap'),
-    el('p', { class: 'muted small' }, 'Cross-checks the research leads above (price, market cap, category tags). Runs only when you click. Offline scans use test data; a live scan sends 1 CoinMarketCap request (about 2 credits) after you confirm.'));
+    el('p', { class: 'muted small' }, 'Cross-checks the scan\'s research leads (the coins in the table with a signal, plus those that moved but were not checked): price, market cap, category tags. Runs only when you click. Offline scans use test data; a live scan sends 1 CoinMarketCap request (about 2 credits) after you confirm.'));
   const c = state.cmc;
-  const b = el('button', { type: 'button', class: 'secondary' }, c?.data ? 'Run the cross-check again' : 'Cross-check leads with CoinMarketCap');
+  const b = el('button', { type: 'button', class: 'secondary' }, c?.data ? 'Run the cross-check again' : 'Cross-check with CoinMarketCap');
   b.disabled = Boolean(c?.loading);
   b.addEventListener('click', () => loadCmc(Boolean(c?.data && c.data.mode === 'live')));
   box.append(b);
@@ -629,11 +690,11 @@ function render() {
   };
   // Crypto: the main budget table first ("Qualified signals within your budget and unit-price limit"),
   // then the research leads and their CoinMarketCap check, then the other budget sections.
-  const crypto = data.market === 'crypto';
+  // Crypto: each evaluated coin's research-lead cautions show under its name in the table.
+  state.leadById = new Map(r.discovery ? [...r.discovery.highPriority, ...r.discovery.watchlist].map((e) => [e.id, e]) : []);
   if (!view) root.append(el('div', { class: 'error' }, controls.error));
-  else if (crypto) root.append(sectionView(view.sections[0]));
+  else for (const sec of view.sections) root.append(sectionView(sec));
   if (r.discovery) root.append(discoveryView(r.discovery, coverage.length > 0));
-  if (view) for (const sec of crypto ? view.sections.slice(1) : view.sections) root.append(sectionView(sec));
   root.append(el('p', { class: 'muted small' }, 'Max whole units = floor(budget ÷ unit price), before fees; no fractional units assumed. Scores measure evidence strength, not expected returns. A research lead, not a recommendation.'));
 
   const groups = new Map();

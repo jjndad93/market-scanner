@@ -179,7 +179,9 @@ test('with enough requests, every eligible history is fetched exactly as before 
 
 test('dashboard renders discovery tiers as text only', () => {
   const app = readFileSync(new URL('../src/web/public/app.js', import.meta.url), 'utf8');
-  for (const s of ['High-priority research candidates', 'Insufficient data', 'Research leads (discovery)', 'could not be evaluated for lack of reliable data']) assert.ok(app.includes(s), s);
+  // Evaluated leads (high-priority, watchlist) appear as table rows with their cautions; coins that could
+  // not be evaluated get their own folded list.
+  for (const s of ['Moved but not checked', 'could not be evaluated for lack of reliable data', '...r.discovery.highPriority, ...r.discovery.watchlist']) assert.ok(app.includes(s), s);
   assert.match(app, /if \(r\.discovery\) root\.append\(discoveryView\(r\.discovery, coverage\.length > 0\)\)/);
   assert.doesNotMatch(app, /innerHTML|insertAdjacentHTML/);
 });

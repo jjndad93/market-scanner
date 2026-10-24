@@ -114,14 +114,17 @@ test('unchanged scores, tiers and rankings; leads are not modified by the cross-
 
 test('dashboard: warnings appear only on crypto research leads, labelled as the second source; stocks untouched', () => {
   const app = readFileSync(new URL('../src/web/public/app.js', import.meta.url), 'utf8');
-  assert.equal((app.match(/leadCrossCheckWarnings\(/g) ?? []).length, 1); // one call, inside discoveryEntry
-  const entry = app.slice(app.indexOf('function discoveryEntry(e)'), app.indexOf('function discoveryView('));
+  assert.equal((app.match(/leadCrossCheckWarnings\(/g) ?? []).length, 1); // one call, inside leadNotes
+  const entry = app.slice(app.indexOf('function leadNotes(e)'), app.indexOf('function discoveryEntry('));
   assert.match(entry, /leadCrossCheckWarnings\(e, state\.cmc\?\.data, state\.last\?\.result\?\.evaluatedAt\)/);
   assert.match(entry, /`Second source: \$\{w\.text\}`/);
   // No comparison logic in the browser: no tolerances, no diff arithmetic in the lookup.
   const view = readFileSync(new URL('../src/web/public/simple-view.js', import.meta.url), 'utf8');
   const lookup = view.slice(view.indexOf('export function leadCrossCheckWarnings'), view.indexOf('// ---- dashboard wording'));
   assert.doesNotMatch(lookup, /diffPct|tolerance|agrees|Math\./);
-  // The stock render path never reaches discoveryEntry (only crypto results carry discovery).
+  // Only crypto leads get them: in the table via the lead map (empty without discovery) and in the
+  // not-checked list. Stock results carry no discovery, so stock rows never show them.
+  assert.match(app, /state\.leadById = new Map\(r\.discovery \? \[\.\.\.r\.discovery\.highPriority, \.\.\.r\.discovery\.watchlist\]\.map\(\(e\) => \[e\.id, e\]\) : \[\]\);/);
+  assert.match(app, /\.\.\.\(state\.leadById\?\.has\(row\.id\) \? leadNotes\(state\.leadById\.get\(row\.id\)\) : \[\]\)/);
   assert.match(app, /if \(r\.discovery\) root\.append\(discoveryView\(r\.discovery, coverage\.length > 0\)\)/);
 });

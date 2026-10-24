@@ -182,3 +182,6 @@ p.warning { display: block; }
 .row-actions .more { display: grid; gap: 8px; margin-top: 6px; white-space: normal; }
 details.settings { margin-top: 12px; }
 details.settings > .controls { margin-top: 8px; }
+/* Research-lead cautions under a coin in the table */
+td.asset .plain-warnings { list-style: none; padding: 0; margin: 6px 0 0; max-width: 340px; }
+td.asset .plain-caution { margin: 2px 0; color: var(--warn); font-size: 12px; white-space: normal; }

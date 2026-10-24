@@ -19,20 +19,15 @@ const app = readFileSync(new URL('../src/web/public/app.js', import.meta.url), '
 const render = app.slice(app.indexOf('function render() {'), app.indexOf('// ---- crypto asset search'));
 const discoveryView = app.slice(app.indexOf('function discoveryView(d, coverageShown) {'), app.indexOf('// ---- CoinMarketCap cross-check'));
 
-test('crypto order: qualified signals within budget, then research leads (with the CoinMarketCap check), then the other budget sections; stocks unchanged', () => {
-  const first = render.indexOf('else if (crypto) root.append(sectionView(view.sections[0]));');
-  const leads = render.indexOf('if (r.discovery) root.append(discoveryView(r.discovery, coverage.length > 0));');
-  const rest = render.indexOf('if (view) for (const sec of crypto ? view.sections.slice(1) : view.sections) root.append(sectionView(sec));');
-  assert.ok(first > 0 && leads > first && rest > leads, 'qualified section, then research leads, then the remaining sections');
-  // The CoinMarketCap check stays at the end of the research-leads section; tiers keep their order.
-  // Compact layout: only the high-priority tier starts open; the others open on click.
-  assert.match(discoveryView, /for \(const key of \['highPriority', 'watchlist', 'insufficientData'\]\)/);
-  assert.match(discoveryView, /box\.append\(el\('details', \{ class: 'section', open: key === 'highPriority' \? '' : null \},/);
-  assert.ok(discoveryView.indexOf('box.append(cmcView());') > discoveryView.indexOf("for (const key of ['highPriority'"));
-  // Stocks have no research leads, and every section renders in its original order (crypto ? … : view.sections).
-  assert.match(render, /const crypto = data\.market === 'crypto';/);
-  // Every section is still rendered once: the first before the leads (crypto), the rest after.
-  assert.equal((render.match(/root\.append\(sectionView\(/g) ?? []).length, 2);
+test('crypto order: every budget section first (leads shown in their rows), then the not-checked coins and the CoinMarketCap check; stocks unchanged', () => {
+  const sections = render.indexOf('else for (const sec of view.sections) root.append(sectionView(sec));');
+  const rest = render.indexOf('if (r.discovery) root.append(discoveryView(r.discovery, coverage.length > 0));');
+  assert.ok(sections > 0 && rest > sections, 'all budget sections, then the not-checked list and the CoinMarketCap check');
+  // The not-checked coins are folded; the CoinMarketCap check stays at the end of that block.
+  assert.match(discoveryView, /el\('summary', \{\}, `Moved but not checked \(\$\{list\.length\}\)`\)/);
+  assert.ok(discoveryView.indexOf('box.append(cmcView());') > discoveryView.indexOf('Moved but not checked'));
+  // Every section is rendered exactly once.
+  assert.equal((render.match(/root\.append\(sectionView\(/g) ?? []).length, 1);
 });
 
 test('the first budget section is "Qualified signals within your budget and unit-price limit" whenever qualified signals are shown', () => {
@@ -74,7 +69,7 @@ test('with the Coverage line shown, the repeated discovery notes are dropped or 
   const evaluated = notes.find((n) => evaluatedRe.test(n))!;
   assert.match(coverage, new RegExp(`(^|\\. )${evaluated.split(' ')[0]} (was|were) evaluated against (its|their) own trading history`));
   // The incomplete-scan note's distinct point (where active skipped assets are listed) is kept.
-  assert.match(discoveryView, /'Eligible assets whose history was not obtained \(see Coverage above\) are listed under Insufficient data if they showed snapshot activity; the rest were not evaluated\.'/);
+  assert.match(discoveryView, /'Eligible assets whose history was not obtained \(see Coverage above\) are listed here if they showed snapshot activity; the rest were not evaluated\.'/);
   // Distinct notes are untouched: scope (top 500, Find a crypto asset), scope exclusions, activity signals never scored.
   assert.ok(notes.some((n) => /^Coverage: the \d+ asset records in this snapshot \(CoinGecko's top 500/.test(n)));
   assert.ok(notes.some((n) => /^Activity signals come from the snapshot only/.test(n)));
