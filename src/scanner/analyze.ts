@@ -14,7 +14,7 @@ import {
   WRAPPED_STAKED_SYMBOLS,
   WRAPPED_STAKED_TAGS,
 } from './rules.ts';
-import type { AssetMetrics, AssetSnapshot, Candidate, CandidateKind, Exclusion, ExclusionReason, ScanResult, ScorePart, VolumeReliability } from './types.ts';
+import type { ActivitySignal, AssetMetrics, AssetSnapshot, Candidate, CandidateKind, Discovery, DiscoveryEntry, DiscoveryTier, Exclusion, ExclusionReason, ScanResult, ScorePart, VolumeReliability } from './types.ts';
 
 export function median(values: readonly number[]): number | null {
   if (values.length === 0) return null;
@@ -196,6 +196,149 @@ export function riskNotes(a: AssetSnapshot, m: AssetMetrics, kind: CandidateKind
   return risks;
 }
 
+/**
+ * Step 2: signs of unusual activity readable from the market snapshot alone (no history needed):
+ * a large 24h move (the mover threshold), high turnover for the asset's size, or a large 7-day
+ * move. Informational and never scored; live runs use them to decide which histories to request
+ * first. Uses the turnover already computed by computeMetrics.
+ */
+export function activitySignals(a: AssetSnapshot, m: AssetMetrics, rules: ScanRules = SCAN_RULES): ActivitySignal[] {
+  const out: ActivitySignal[] = [];
+  if (has(a.change24hPct) && Math.abs(a.change24hPct.value) >= rules.moverMinAbsMovePct) {
+    out.push({ code: 'large_24h_move', detail: `${signed(a.change24hPct.value)} in 24h (at least ${rules.moverMinAbsMovePct}%)` });
+  }
+  if (has(m.turnover) && m.turnover.value >= rules.prescreenMinTurnover) {
+    out.push({ code: 'high_turnover', detail: `24h volume is ${(m.turnover.value * 100).toFixed(0)}% of market cap (at least ${(rules.prescreenMinTurnover * 100).toFixed(0)}%)` });
+  }
+  if (has(a.change7dPct) && Math.abs(a.change7dPct.value) >= rules.prescreenMinAbs7dPct) {
+    out.push({ code: 'large_7d_move', detail: `${signed(a.change7dPct.value)} over 7 days (at least ${rules.prescreenMinAbs7dPct}%)` });
+  }
+  return out;
+}
+
+/** Exclusions that mean "not enough reliable information", as opposed to "outside the scanner's scope". */
+const DATA_GAP_CODES: ReadonlySet<string> = new Set([
+  'history_not_requested', 'history_request_failed', 'insufficient_history', 'unreliable_history', 'stale_data', 'missing_data', 'implausible_data',
+]);
+/** Exclusions by scope rule (stablecoins, wrapped tokens, size and volume minimums, duplicates). */
+const isScopeExclusion = (reasons: ExclusionReason[]) => reasons.some((r) => !DATA_GAP_CODES.has(r.code));
+
+function baselineCaveats(c: Candidate, rules: ScanRules): { caveats: string[]; codes: string[]; downgrade: boolean } {
+  const caveats: string[] = [];
+  const codes: string[] = [];
+  let downgrade = false;
+  const rel = c.volumeReliability;
+  if (rel.insufficient) {
+    caveats.push(`Baseline variability could not be measured (${rel.validDays} valid days).`);
+    codes.push('baseline_unmeasured');
+    downgrade = true;
+  } else if (rel.highlyVariable) {
+    caveats.push(`Highly variable volume baseline (Q3/Q1 ${rel.iqrRatio.toFixed(1)}x): the volume multiple is less conclusive.`);
+    codes.push('baseline_variable');
+    downgrade = true;
+  }
+  const rv = c.metrics.relativeVolume.value!;
+  if (rv >= rules.extremeRelVolume) {
+    caveats.push(`Extreme volume spike (${rv.toFixed(1)}x): may be a one-off or a reporting artifact.`);
+    codes.push('extreme_spike');
+    downgrade = true;
+  }
+  const unusable = c.asset.history.zeroDays + c.asset.history.invalidEntries;
+  if (unusable > 0) {
+    caveats.push(`${unusable} unusable day(s) in the ${c.asset.history.windowDays}-day baseline window were left out.`);
+    codes.push('unusable_days');
+  }
+  if (c.kind === 'mover' && !has(c.asset.change7dPct)) {
+    caveats.push('7-day change missing: the trend was not assessed.');
+    codes.push('trend_missing');
+  }
+  return { caveats, codes, downgrade };
+}
+
+const entry = (a: AssetSnapshot, m: AssetMetrics, tier: DiscoveryTier, status: DiscoveryEntry['status'], c: Candidate | null, reasons: string[], caveats: string[], caveatCodes: string[], activity: ActivitySignal[]): DiscoveryEntry => ({
+  id: a.id, symbol: a.symbol, name: a.name, tier, status, kind: c?.kind ?? null, score: c?.score ?? null, maxScore: c?.maxScore ?? null, reasons, caveats, caveatCodes, activity,
+  change24hPct: has(a.change24hPct) ? a.change24hPct.value : null, change7dPct: has(a.change7dPct) ? a.change7dPct.value : null,
+  volumeMultiple: has(m.relativeVolume) ? m.relativeVolume.value : null,
+  price: has(a.price) ? a.price.value : null, marketCap: has(a.marketCap) ? a.marketCap.value : null, lastUpdated: has(a.lastUpdated) ? a.lastUpdated.value : null,
+});
+const kindText = (c: Candidate) => (c.kind === 'mover' ? 'Mover: large move on unusual volume' : 'Watchlist: unusual volume without a large move');
+const evidenceReasons = (c: Candidate) => [`${kindText(c)}, evidence ${c.score}/${c.maxScore}.`, ...c.breakdown.filter((p) => p.points > 0).map((p) => `${p.rule} ${p.points}/${p.max}: ${p.detail}`)];
+const byActivity = (x: { a: AssetSnapshot; activity: ActivitySignal[] }, y: { a: AssetSnapshot; activity: ActivitySignal[] }) =>
+  (y.activity.length - x.activity.length)
+  || (Math.abs(y.a.change24hPct.value ?? 0) - Math.abs(x.a.change24hPct.value ?? 0))
+  || (x.a.id < y.a.id ? -1 : x.a.id > y.a.id ? 1 : 0);
+
+/**
+ * Step 2: research leads by evidence tier. Informational only: scores, ranks and display limits are
+ * unchanged, and nothing is invented.
+ * - high priority: a qualified MOVER (shortlisted or over the display limit): a large price move AND
+ *   unusual volume against its own baseline, with that baseline measured and stable and no
+ *   extreme spike. Several independent signals agree.
+ * - watchlist: a qualified watch candidate (unusual volume only, no large move); a qualified mover
+ *   with a baseline caveat; a pattern below the evidence threshold; or an evaluated asset with a
+ *   large price move but no unusual volume
+ * - insufficient data: snapshot activity, but no reliable evaluation (history not obtained or
+ *   unreliable, stale, missing or implausible data). Assets excluded by scope rules are not listed.
+ */
+function buildDiscovery(
+  r: { shortlisted: Candidate[]; overLimit: Candidate[]; belowThreshold: Candidate[]; noPattern: { a: AssetSnapshot; m: AssetMetrics }[]; excluded: { a: AssetSnapshot; m: AssetMetrics; reasons: ExclusionReason[] }[] },
+  ctx: { universe: number; evaluated: number; dataset: NormalizedDataset['dataset'] },
+  rules: ScanRules,
+): Discovery {
+  const high: DiscoveryEntry[] = [];
+  const watchQualified: DiscoveryEntry[] = [];
+  const qualified = [...r.shortlisted.map((c) => ({ c, status: 'shortlisted' as const })), ...r.overLimit.map((c) => ({ c, status: 'over_display_limit' as const }))]
+    .sort((x, y) => compareCandidates(x.c, y.c));
+  for (const { c, status } of qualified) {
+    const { caveats, codes, downgrade } = baselineCaveats(c, rules);
+    // A watch candidate is one signal (volume) without a price move: noteworthy, not high priority.
+    if (c.kind === 'watch') {
+      caveats.unshift('One signal only: unusual volume without a large price move; direction and cause unknown.');
+      codes.unshift('one_signal');
+    }
+    const isHigh = c.kind === 'mover' && !downgrade;
+    const e = entry(c.asset, c.metrics, isHigh ? 'high_priority' : 'watchlist', status, c, evidenceReasons(c), caveats, codes, activitySignals(c.asset, c.metrics, rules));
+    (isHigh ? high : watchQualified).push(e);
+  }
+  const weaker = [...r.belowThreshold].sort(compareCandidates).map((c) => {
+    const threshold = c.kind === 'mover' ? rules.moverMinScore : rules.watchMinScore;
+    const { caveats, codes } = baselineCaveats(c, rules);
+    return entry(c.asset, c.metrics, 'watchlist', 'below_threshold', c, evidenceReasons(c), [`Evidence ${c.score}/${c.maxScore} is below the scanner's threshold of ${threshold}.`, ...caveats], ['below_threshold', ...codes], activitySignals(c.asset, c.metrics, rules));
+  });
+  // Evaluated, no candidate pattern, but a large price move: noteworthy price action without unusual volume.
+  const priceOnly = r.noPattern
+    .map(({ a, m }) => ({ a, m, activity: activitySignals(a, m, rules).filter((s) => s.code !== 'high_turnover') }))
+    .filter((x) => x.activity.length > 0)
+    .sort(byActivity)
+    .map(({ a, m, activity }) => entry(a, m, 'watchlist', 'below_threshold', null, activity.map((s) => s.detail),
+      [`Volume is not unusual against its own baseline (${has(m.relativeVolume) ? `${m.relativeVolume.value.toFixed(2)}x` : 'n/a'} the median), so the move lacks volume confirmation.`], ['no_volume_confirmation'], activitySignals(a, m, rules)));
+
+  const withActivity = [...r.shortlisted, ...r.overLimit, ...r.belowThreshold].filter((c) => activitySignals(c.asset, c.metrics, rules).length > 0).length
+    + r.noPattern.filter(({ a, m }) => activitySignals(a, m, rules).length > 0).length;
+  const excludedActive = r.excluded.map((x) => ({ ...x, activity: activitySignals(x.a, x.m, rules) })).filter((x) => x.activity.length > 0);
+  const insufficient = excludedActive.filter((x) => !isScopeExclusion(x.reasons)).sort(byActivity)
+    .map((x) => entry(x.a, x.m, 'insufficient_data', 'not_evaluated', null, x.activity.map((s) => s.detail), x.reasons.map((reason) => `Not evaluated: ${reason.detail}.`), x.reasons.map((reason) => reason.code), x.activity));
+  const scopeExcluded = excludedActive.length - insufficient.length;
+
+  const notes: string[] = [];
+  notes.push(ctx.dataset.kind === 'live'
+    ? `Coverage: the ${ctx.universe} asset records in this snapshot (CoinGecko's top 250 by market cap, one page). Coins outside it are not scanned; use "Find a crypto asset" to look one up.`
+    : `Coverage: the ${ctx.universe} asset records in the synthetic fixture (TEST DATA).`);
+  notes.push(`${ctx.evaluated} asset(s) passed every filter and were evaluated against their own volume baseline.`);
+  const cov = ctx.dataset.coverage;
+  if (cov && !cov.complete) {
+    notes.push(`Incomplete scan: volume history was not obtained for ${cov.historyNotRequested + cov.historyRequestFailed} of ${cov.historyEligible} eligible asset(s)${cov.stopReason ? ` (${cov.stopReason})` : ''}. Those with snapshot activity are listed under insufficient data; the rest were not evaluated.`);
+  }
+  if (scopeExcluded > 0) notes.push(`${scopeExcluded} asset(s) with snapshot activity were excluded by the scanner's scope rules (stablecoins, wrapped or staked tokens, size or volume minimums, duplicates) and are not listed.`);
+  notes.push('Activity signals come from the snapshot only (24h and 7-day change, turnover). They are never scored, and the tiers never change scores or ranks.');
+  return {
+    highPriority: high,
+    watchlist: [...watchQualified, ...weaker, ...priceOnly],
+    insufficientData: insufficient,
+    coverage: { universe: ctx.universe, evaluated: ctx.evaluated, withActivity: withActivity + excludedActive.length, withActivityNotEvaluated: insufficient.length, notes },
+  };
+}
+
 /** Deterministic order: score, then relative volume, then 24h volume (all descending), then id. */
 export function compareCandidates(x: Candidate, y: Candidate): number {
   return (y.score - x.score)
@@ -258,6 +401,10 @@ export function runScan(data: NormalizedDataset, now: Date, rules: ScanRules = S
   const belowThreshold: Candidate[] = [];
   let passedFilters = 0;
   let notCandidates = 0;
+  const noPattern: AssetSnapshot[] = [];
+  // Step 2 (discovery): snapshots and metrics kept for the informational tiers.
+  const noPatternFull: { a: AssetSnapshot; m: AssetMetrics }[] = [];
+  const excludedFull: { a: AssetSnapshot; m: AssetMetrics; reasons: ExclusionReason[] }[] = [];
 
   // Distinct ids sharing a symbol are ambiguous: flag them so the report identifies them by id.
   const idsBySymbol = new Map<string, string[]>();
@@ -272,12 +419,15 @@ export function runScan(data: NormalizedDataset, now: Date, rules: ScanRules = S
     const reasons = exclusionReasons(a, m, rules);
     if (reasons.length > 0) {
       excluded.push({ id: a.id, symbol: a.symbol, name: a.name, reasons });
+      excludedFull.push({ a, m, reasons });
       continue;
     }
     passedFilters++;
     const kind = classify(a, m, rules);
     if (kind === null) {
       notCandidates++;
+      noPattern.push(a);
+      noPatternFull.push({ a, m });
       continue;
     }
     const scored = scoreCandidate(a, m, kind);
@@ -298,6 +448,15 @@ export function runScan(data: NormalizedDataset, now: Date, rules: ScanRules = S
   movers.sort(compareCandidates);
   watch.sort(compareCandidates);
   belowThreshold.sort(compareCandidates);
+  const discovery = buildDiscovery(
+    {
+      shortlisted: [...movers.slice(0, rules.maxMovers), ...watch.slice(0, rules.maxWatchlist)],
+      overLimit: [...movers.slice(rules.maxMovers), ...watch.slice(rules.maxWatchlist)],
+      belowThreshold, noPattern: noPatternFull, excluded: excludedFull,
+    },
+    { universe: data.assets.length + data.invalid.length, evaluated: passedFilters, dataset: data.dataset },
+    rules,
+  );
   return {
     dataset: data.dataset,
     evaluatedAt: now.toISOString(),
@@ -309,7 +468,10 @@ export function runScan(data: NormalizedDataset, now: Date, rules: ScanRules = S
     watchlistOverLimit: watch.slice(rules.maxWatchlist),
     belowThreshold,
     notCandidates,
+    // Additive (dashboard budget view): the assets behind `notCandidates`, sorted by id.
+    noPattern: noPattern.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0)),
     excluded: excluded.sort(byIdThenReason),
     symbolCollisions,
+    discovery,
   };
 }

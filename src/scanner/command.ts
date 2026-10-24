@@ -14,6 +14,7 @@ import { COINGECKO_INFO, nextStepFor } from '../core/errors.ts';
 import { createFileHistoryCache, historyCacheDir } from '../providers/history-cache.ts';
 import { type FetchLike, createHttpClient } from '../providers/http.ts';
 import { runScan } from './analyze.ts';
+import { addLeadExplanations } from './lead-quality.ts';
 import { normalizeDataset } from './normalize.ts';
 import { renderScanReport, summarizeCryptoScan } from './render.ts';
 
@@ -173,9 +174,11 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
   }
 
   const emit = (data: unknown, now: Date) => {
-    const result = runScan(normalizeDataset(data), now);
-    // `scan` (Stage 7) is additive: every existing field keeps its name and meaning.
-    deps.out(values.json ? terminalSafeJson(JSON.stringify({ ...result, scan: summarizeCryptoScan(result) }, null, 2)) : renderScanReport(result));
+    const normalized = normalizeDataset(data);
+    const result = runScan(normalized, now);
+    // `scan` (Stage 7) is additive: every existing field keeps its name and meaning. JSON only:
+    // each research lead also gets an `explanation` (lead-quality.ts); the text report is unchanged.
+    deps.out(values.json ? terminalSafeJson(JSON.stringify({ ...addLeadExplanations(result, normalized), scan: summarizeCryptoScan(result) }, null, 2)) : renderScanReport(result));
     return 0;
   };
 

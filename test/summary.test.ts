@@ -109,7 +109,13 @@ test('JSON: an additive "scan" object; every pre-existing field is unchanged; of
     const t = deps();
     assert.equal(await runScanCommand([market, '--json'], t.d), 0, market);
     assert.equal(t.calls(), 0, market);
-    const { scan, ...rest } = JSON.parse(t.out.join('\n'));
+    // Phase 1 (lead-quality.ts) adds an `explanation` to each crypto research lead in the JSON only;
+    // that additive field is set aside so every pre-existing field is still compared exactly.
+    const { scan, ...rest } = JSON.parse(t.out.join('\n'), (k, v) => (k === 'explanation' ? undefined : v));
+    if (market === 'crypto') {
+      const d = JSON.parse(t.out.join('\n')).discovery;
+      for (const e of [...d.highPriority, ...d.watchlist, ...d.insufficientData]) assert.equal(typeof e.explanation?.reason, 'string', e.id);
+    }
     assert.deepEqual(rest, JSON.parse(JSON.stringify(expected)), market);
     assert.equal(scan.scanType, market);
     assert.equal(scan.mode, 'offline');

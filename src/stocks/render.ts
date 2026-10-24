@@ -7,7 +7,7 @@ import { wrap } from '../scanner/render.ts';
 import { STOCK_RULES, type StockRules } from './rules.ts';
 import type { StockCandidate, StockExclusionCode, StockScanResult } from './types.ts';
 
-const EXCLUSION_LABEL: Record<StockExclusionCode, string> = {
+export const EXCLUSION_LABEL: Record<StockExclusionCode, string> = {
   invalid_record: 'invalid record',
   duplicate_symbol: 'duplicate symbol',
   history_not_requested: 'bars not requested (request/rate limit)',

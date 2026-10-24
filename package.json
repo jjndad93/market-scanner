@@ -10,6 +10,7 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "option": "node src/cli.ts option",
-    "scan": "node src/cli.ts scan"
+    "scan": "node src/cli.ts scan",
+    "web": "node src/web/server.ts"
   }
 }

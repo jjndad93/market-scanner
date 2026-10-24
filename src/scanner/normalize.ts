@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { type Evidence, missing, testData, verified } from '../core/evidence.ts';
 import { normalizeTag, SCAN_RULES, type ScanRules } from './rules.ts';
-import type { AssetSnapshot, DatasetMeta, Exclusion, HistoryCoverage, HistoryStatus, RawAsset } from './types.ts';
+import type { AssetSnapshot, DatasetMeta, Exclusion, HistoryCoverage, HistoryStatus, MarketExtras, RawAsset } from './types.ts';
 
 export interface NormalizedDataset {
   dataset: DatasetMeta;
@@ -131,6 +131,30 @@ function validateCoverage(v: unknown): HistoryCoverage {
   };
 }
 
+/**
+ * Extra provider market fields, validated like every other number and tagged with the same
+ * provenance. Returned only when at least one was supplied, so fixtures keep their exact shape.
+ */
+function marketExtras(
+  raw: RawAsset,
+  num: (value: unknown, label: string, valid: (n: number) => boolean, rule: string) => Evidence<number>,
+  tag: <T>(value: T, at: string | null) => Evidence<T>,
+  asOf: string | null,
+): { market?: MarketExtras } {
+  const given = [raw.marketCapRank, raw.high24h, raw.low24h, raw.athChangePct, raw.athDate].some((v) => v !== undefined && v !== null);
+  if (!given) return {};
+  const athIso = isText(raw.athDate) && !Number.isNaN(Date.parse(raw.athDate)) ? new Date(raw.athDate).toISOString() : null;
+  return {
+    market: {
+      rank: num(raw.marketCapRank, 'market-cap rank', (n) => Number.isInteger(n) && n >= 1, 'must be a whole number >= 1'),
+      high24h: num(raw.high24h, '24h high', (n) => n > 0, 'must be > 0'),
+      low24h: num(raw.low24h, '24h low', (n) => n > 0, 'must be > 0'),
+      athChangePct: num(raw.athChangePct, 'change from all-time high', (n) => n > -100 && n <= 1, 'must be > -100% and not above the all-time high'),
+      athDate: athIso !== null ? tag(athIso, asOf) : missing(raw.athDate === undefined || raw.athDate === null ? 'all-time-high date not provided' : `all-time-high date "${String(raw.athDate)}" is invalid`),
+    },
+  };
+}
+
 function normalizeAsset(raw: RawAsset, dataset: DatasetMeta, historyWindowDays: number): AssetSnapshot {
   const lastUpdatedIso = isText(raw.lastUpdated) && !Number.isNaN(Date.parse(raw.lastUpdated)) ? new Date(raw.lastUpdated).toISOString() : null;
   const asOf = lastUpdatedIso ?? null;
@@ -170,6 +194,7 @@ function normalizeAsset(raw: RawAsset, dataset: DatasetMeta, historyWindowDays: 
     volume24h: num(raw.volume24h, '24h volume', (n) => n >= 0, 'must be >= 0'),
     marketCap: num(raw.marketCap, 'market cap', (n) => n > 0, 'must be > 0'),
     lastUpdated: lastUpdatedIso !== null ? tag(lastUpdatedIso, lastUpdatedIso) : missing(isText(raw.lastUpdated) ? `last-updated time "${raw.lastUpdated}" is invalid` : 'last-updated time not provided'),
+    ...marketExtras(raw, num, tag, asOf),
     dailyVolumes,
     history: { supplied: supplied.length, windowDays: window.length, zeroDays, invalidEntries },
     // Added only when set (already validated), so fixture output gains no new key.

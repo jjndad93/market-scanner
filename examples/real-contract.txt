@@ -1,0 +1,31 @@
+# Paste the REAL contract details from your broker below (replace the template lines).
+# Do not put API keys in this file; keys belong only in Windows user environment variables.
+# Paste or type the contract details, one per line. Only the first block is required.
+# Required
+Underlying: XMPL
+Stock price: 52.40
+Strike: 55
+Expiration: 2026-12-18
+Type: Call
+# Price: give the bid and ask if you can, plus the premium you would actually pay
+Bid: 2.35
+Ask: 2.45
+Premium: 2.45
+# Strongly recommended
+Quote time: 2026-10-20 10:15 ET
+Volume: 1180
+Open interest: 6420
+Earnings date: 2026-11-05
+Historical volatility: 33%
+# Optional
+Quantity: 1
+IV: 38.2%
+Delta: 0.41
+Risk-free rate: 4%
+Dividend yield: 0%
+Ex-dividend date: 2026-11-20
+Dividend: 0.25
+Trend: up 6% over 20 trading days
+# A symbol line also works instead of Underlying/Strike/Expiration/Type:
+# XMPL Dec 18 2026 55 Call      or      XMPL261218C00055000
+# (All values above are illustrative placeholders, not real quotes.)

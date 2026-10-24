@@ -23,6 +23,14 @@ export interface RawAsset {
   dailyVolumes?: number[] | null;
   /** Optional classification hints, e.g. "stablecoin", "wrapped", "staked". */
   tags?: string[];
+  /** Provider market-cap rank (1 = largest). Informational; never scored. */
+  marketCapRank?: number | null;
+  /** Provider 24h high and low price, USD (CoinGecko high_24h / low_24h). Informational; never scored. */
+  high24h?: number | null;
+  low24h?: number | null;
+  /** Provider % change from the all-time high (ath_change_percentage) and the ATH date. Informational. */
+  athChangePct?: number | null;
+  athDate?: string | null;
   /** Live only: set when this run did not obtain the asset's history (see HistoryStatus). */
   historyStatus?: HistoryStatus;
 }
@@ -77,6 +85,14 @@ export interface DatasetMeta {
   coverage?: HistoryCoverage;
 }
 
+export interface MarketExtras {
+  rank: Evidence<number>;
+  high24h: Evidence<number>;
+  low24h: Evidence<number>;
+  athChangePct: Evidence<number>;
+  athDate: Evidence<string>;
+}
+
 export interface AssetSnapshot {
   id: string;
   symbol: string;
@@ -88,6 +104,11 @@ export interface AssetSnapshot {
   volume24h: Evidence<number>;
   marketCap: Evidence<number>;
   lastUpdated: Evidence<string>;
+  /**
+   * Extra provider-reported market fields (informational; never used in filtering or scoring).
+   * Present only when the source supplied at least one of them (live CoinGecko data does).
+   */
+  market?: MarketExtras;
   /** Valid (finite, positive) daily volumes from the most recent history window. */
   dailyVolumes: number[];
   /** What happened to the supplied history, so nothing is dropped silently. */
@@ -190,8 +211,69 @@ export interface ScanResult {
   belowThreshold: Candidate[];
   /** Passed filters but matched neither the mover nor the watchlist pattern. */
   notCandidates: number;
+  /** Additive: the assets counted in `notCandidates` (passed every filter, matched no pattern), by id. */
+  noPattern: AssetSnapshot[];
   /** Sorted by id, then by first reason, so the order never depends on the input order. */
   excluded: Exclusion[];
   /** Distinct ids sharing one symbol: ambiguous, so the report names them by id. */
   symbolCollisions: { symbol: string; ids: string[] }[];
+  /** Additive (Step 2): research leads by evidence tier, with reasons, caveats and coverage. Informational; scores unchanged. */
+  discovery: Discovery;
+}
+
+/** A sign of unusual activity read from the market snapshot alone (no history needed). */
+export interface ActivitySignal {
+  code: 'large_24h_move' | 'high_turnover' | 'large_7d_move';
+  detail: string;
+}
+
+export type DiscoveryTier = 'high_priority' | 'watchlist' | 'insufficient_data';
+
+export interface DiscoveryEntry {
+  id: string;
+  symbol: string;
+  name: string;
+  tier: DiscoveryTier;
+  /** The scanner's own result for this asset: its candidate kind and score, or why it was not evaluated. */
+  status: 'shortlisted' | 'over_display_limit' | 'below_threshold' | 'not_evaluated';
+  kind: CandidateKind | null;
+  score: number | null;
+  maxScore: number | null;
+  /** Why it was surfaced: the evidence, with values. */
+  reasons: string[];
+  /** What limits the evidence: baseline quality, missing or stale data, history not obtained. */
+  caveats: string[];
+  /** Snapshot-only activity signals (also used to order history requests in live runs). */
+  activity: ActivitySignal[];
+  /**
+   * One code per caveat, in the same order: baseline_unmeasured, baseline_variable, extreme_spike,
+   * unusable_days, trend_missing, one_signal, below_threshold, no_volume_confirmation, or (for
+   * insufficient data) the scanner's exclusion reason codes. For plain-language display.
+   */
+  caveatCodes: string[];
+  /** 24h and 7-day % change, and 24h volume / own baseline median (null when not available). */
+  change24hPct: number | null;
+  change7dPct: number | null;
+  volumeMultiple: number | null;
+  /** The snapshot's own values for this asset (null when missing or invalid), for second-source checks. */
+  price: number | null;
+  marketCap: number | null;
+  lastUpdated: string | null;
+}
+
+export interface Discovery {
+  highPriority: DiscoveryEntry[];
+  watchlist: DiscoveryEntry[];
+  insufficientData: DiscoveryEntry[];
+  coverage: {
+    /** Asset records in the snapshot (the scanned universe). */
+    universe: number;
+    /** Assets passing every filter (fully evaluated against their own baseline). */
+    evaluated: number;
+    /** Assets with at least one snapshot activity signal. */
+    withActivity: number;
+    /** Of those, how many could not be evaluated for lack of reliable data (listed as insufficient data). Scope exclusions are counted in the notes only. */
+    withActivityNotEvaluated: number;
+    notes: string[];
+  };
 }

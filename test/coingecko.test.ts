@@ -62,7 +62,11 @@ test('parseMarkets maps documented fields one-to-one and passes values through u
   assert.deepEqual(a, {
     id: 'syn-coin', symbol: 'syn', name: 'Synthetic Coin', price: 'abc', change24hPct: 10, change7dPct: 12,
     volume24h: 50e6, marketCap: 1e9, lastUpdated: '2026-10-21T11:57:00.000Z', dailyVolumes: null, tags: [],
+    // Informational fields from the same response (absent in this test coin, so undefined).
+    marketCapRank: undefined, high24h: undefined, low24h: undefined, athChangePct: undefined, athDate: undefined,
   });
+  const [b] = parseMarkets([coin({ market_cap_rank: 42, high_24h: 5.5, low_24h: 4.5, ath_change_percentage: -80.5, ath_date: '2025-01-02T00:00:00.000Z' })]);
+  assert.deepEqual([b!.marketCapRank, b!.high24h, b!.low24h, b!.athChangePct, b!.athDate], [42, 5.5, 4.5, -80.5, '2025-01-02T00:00:00.000Z']);
   // The invalid price is reported by the normalizer, not replaced.
   const n = normalizeDataset({ dataset: { kind: 'live', label: 'l', source: 's', asOf: NOW.toISOString(), attribution: 'a' }, assets: [a] });
   assert.match(n.assets[0]!.price.note!, /invalid \(abc/);

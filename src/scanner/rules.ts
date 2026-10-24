@@ -53,6 +53,13 @@ export const SCAN_RULES = {
   // 1.4-2.5 and an erratic one 38.5. Q3/Q1 ignores the lowest and highest quarter of days, so a
   // single tiny or huge day cannot trigger it (unlike max/min).
   variableBaselineIqrRatio: 4,
+
+  // Step 2, discovery pre-screen (never scored): signs of unusual activity readable from the
+  // market snapshot alone. Live runs request history for such assets first, so a limited request
+  // budget is not spent only on the largest coins. Heuristics, not calibrated statistics. A large
+  // 24h move reuses `moverMinAbsMovePct`.
+  prescreenMinTurnover: 0.15, // 24h volume >= 15% of market cap
+  prescreenMinAbs7dPct: 20, // |7-day change| >= 20%
 };
 
 export type ScanRules = { readonly [K in keyof typeof SCAN_RULES]: number };

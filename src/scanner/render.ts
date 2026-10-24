@@ -8,7 +8,7 @@ import type { Candidate, ExclusionCode, ScanResult } from './types.ts';
 
 const WIDTH = 100;
 
-const EXCLUSION_LABEL: Record<ExclusionCode, string> = {
+export const EXCLUSION_LABEL: Record<ExclusionCode, string> = {
   invalid_record: 'invalid record',
   duplicate_record: 'duplicate record (counted once)',
   duplicate_conflict: 'conflicting duplicate ids',

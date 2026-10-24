@@ -38,13 +38,19 @@ export class HttpError extends Error {
   readonly path: string;
   /** True when at least one attempt for this request was actually sent. */
   readonly requestSent: boolean;
-  constructor(kind: HttpErrorKind, path: string, message: string, status: number | null = null, requestSent = true) {
+  /**
+   * The start of an error response's body (key redacted, at most 2,000 characters), for providers
+   * that put a machine-readable error code there. Never part of `message`; null when not read.
+   */
+  readonly responseBody: string | null;
+  constructor(kind: HttpErrorKind, path: string, message: string, status: number | null = null, requestSent = true, responseBody: string | null = null) {
     super(message);
     this.name = 'HttpError';
     this.kind = kind;
     this.status = status;
     this.path = path;
     this.requestSent = requestSent;
+    this.responseBody = responseBody;
   }
 }
 
@@ -76,8 +82,16 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
 
   // Defense in depth: no message from this module may contain the key.
   const redact = (text: string) => text.split(apiKey).join('[REDACTED]');
-  const fail = (kind: HttpErrorKind, path: string, message: string, status: number | null = null, requestSent = true) =>
-    new HttpError(kind, path, redact(message), status, requestSent);
+  const fail = (kind: HttpErrorKind, path: string, message: string, status: number | null = null, requestSent = true, body: string | null = null) =>
+    new HttpError(kind, path, redact(message), status, requestSent, body === null ? null : redact(body));
+  /** An error response's body, capped; never throws. */
+  const errorBody = async (res: { text(): Promise<string> }) => {
+    try {
+      return (await res.text()).slice(0, 2000);
+    } catch {
+      return null;
+    }
+  };
 
   async function attempt(path: string, url: string) {
     if (callsMade >= maxCalls) throw fail('budget', path, `Call budget of ${maxCalls} requests reached; ${path} was not requested.`, null, false);
@@ -104,7 +118,7 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       if (res.status === 429) {
         const wait = parseRetryAfter(res.headers.get('retry-after'));
         if (wait === null || wait > maxRetryWaitMs) {
-          throw fail('rate_limited', path, `Rate limited on ${path} (HTTP 429); Retry-After ${wait === null ? 'missing or invalid' : `${Math.round(wait / 1000)} s exceeds the ${Math.round(maxRetryWaitMs / 1000)} s limit`}. Not retried.`, 429);
+          throw fail('rate_limited', path, `Rate limited on ${path} (HTTP 429); Retry-After ${wait === null ? 'missing or invalid' : `${Math.round(wait / 1000)} s exceeds the ${Math.round(maxRetryWaitMs / 1000)} s limit`}. Not retried.`, 429, true, await errorBody(res));
         }
         await sleep(wait);
         if (callsMade >= maxCalls) {
@@ -112,9 +126,9 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
           throw fail('budget', path, `Rate limited on ${path} (HTTP 429); the retry was not sent because the call budget of ${maxCalls} requests was reached.`, 429, true);
         }
         res = await attempt(path, url);
-        if (res.status === 429) throw fail('rate_limited', path, `Rate limited on ${path} again after one retry (HTTP 429).`, 429);
+        if (res.status === 429) throw fail('rate_limited', path, `Rate limited on ${path} again after one retry (HTTP 429).`, 429, true, await errorBody(res));
       }
-      if (!res.ok) throw fail('http', path, `HTTP ${res.status} from ${path}.`, res.status);
+      if (!res.ok) throw fail('http', path, `HTTP ${res.status} from ${path}.`, res.status, true, await errorBody(res));
       const body = await res.text();
       try {
         return JSON.parse(body);

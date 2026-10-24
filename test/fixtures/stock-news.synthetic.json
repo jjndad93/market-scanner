@@ -1,0 +1,81 @@
+{
+  "_comment": "TEST DATA: synthetic news in the Massive /v2/reference/news response shape. Invented publishers, headlines and tickers matching stock-scan.synthetic.json; every link points at example.com. NOT real news.",
+  "status": "OK",
+  "results": [
+    {
+      "id": "syn-news-a1",
+      "publisher": { "name": "Synthetic Wire (TEST DATA)" },
+      "title": "Synthetic Alpha Corp raises full-year outlook",
+      "author": "Test Author",
+      "published_utc": "2026-10-20T12:30:00Z",
+      "article_url": "https://example.com/test-news/syna-outlook",
+      "tickers": ["SYNA"],
+      "description": "TEST DATA. Synthetic Alpha Corp said it expects higher full-year revenue than it previously forecast.",
+      "insights": [{ "ticker": "SYNA", "sentiment": "positive", "sentiment_reasoning": "TEST DATA. The company raised its outlook." }]
+    },
+    {
+      "id": "syn-news-a1-copy",
+      "publisher": { "name": "Synthetic Aggregator (TEST DATA)" },
+      "title": "Synthetic Alpha Corp raises full-year outlook",
+      "published_utc": "2026-10-20T12:35:00Z",
+      "article_url": "https://example.com/test-news/syna-outlook",
+      "tickers": ["SYNA"],
+      "description": "TEST DATA. Duplicate of the same report under another id."
+    },
+    {
+      "id": "syn-news-a2",
+      "publisher": { "name": "Synthetic Markets Daily (TEST DATA)" },
+      "title": "Why Synthetic Alpha shares jumped today",
+      "published_utc": "2026-10-20T22:10:00Z",
+      "article_url": "https://example.com/test-news/syna-why-jumped",
+      "tickers": ["SYNA"],
+      "description": "TEST DATA. A recap written after the close describing the session's rise."
+    },
+    {
+      "id": "syn-news-roundup",
+      "publisher": { "name": "Synthetic Weekly (TEST DATA)" },
+      "title": "Ten stocks to watch this week",
+      "published_utc": "2026-10-20T10:00:00Z",
+      "article_url": "https://example.com/test-news/ten-to-watch",
+      "tickers": ["SYNA", "SYNB", "SYNC", "TSTX", "TSTY"],
+      "description": "TEST DATA. A list article that mentions many companies."
+    },
+    {
+      "id": "syn-news-b1",
+      "publisher": { "name": "Synthetic Wire (TEST DATA)" },
+      "title": "Synthetic Beta Inc misses quarterly revenue estimates",
+      "published_utc": "2026-10-20T11:00:00Z",
+      "article_url": "https://example.com/test-news/synb-miss",
+      "tickers": ["SYNB"],
+      "description": "TEST DATA. Quarterly revenue came in below the average analyst estimate.",
+      "insights": [{ "ticker": "SYNB", "sentiment": "negative", "sentiment_reasoning": "TEST DATA. Revenue missed estimates." }]
+    },
+    {
+      "id": "syn-news-b2",
+      "publisher": { "name": "Synthetic Business Journal (TEST DATA)" },
+      "title": "Synthetic Beta announces a larger share buyback",
+      "published_utc": "2026-10-20T13:00:00Z",
+      "article_url": "https://example.com/test-news/synb-buyback",
+      "tickers": ["SYNB"],
+      "description": "TEST DATA. The board approved an expanded repurchase program.",
+      "insights": [{ "ticker": "SYNB", "sentiment": "positive", "sentiment_reasoning": "TEST DATA. Buybacks are usually viewed favourably." }]
+    },
+    {
+      "id": "syn-news-c1",
+      "publisher": { "name": "Synthetic Interviews (TEST DATA)" },
+      "title": "<img src=x onerror=alert(1)> Synthetic Gamma Holdings CEO interview",
+      "article_url": "javascript:alert(1)",
+      "tickers": ["SYNC"],
+      "description": "TEST DATA. No publication time and an unsafe link: the time cannot be placed and the link is dropped."
+    },
+    {
+      "id": "syn-news-c2",
+      "publisher": { "name": "Synthetic Wire (TEST DATA)" },
+      "title": "Synthetic Gamma Holdings opens a new plant",
+      "published_utc": "2026-09-01T14:00:00Z",
+      "article_url": "https://example.com/test-news/sync-plant",
+      "tickers": ["SYNC"],
+      "description": "TEST DATA. An older report, weeks before the session evaluated."
+    }
+  ]
+}

@@ -114,6 +114,8 @@ export interface StockScanResult {
   /** Matched a pattern but scored below the threshold. */
   belowThreshold: StockCandidate[];
   notCandidates: number;
+  /** Additive: the stocks counted in `notCandidates` (passed every filter, matched no pattern), by symbol. */
+  noPattern: { stock: StockSnapshot; metrics: StockMetrics }[];
   /** Sorted by symbol. */
   excluded: StockExclusion[];
   /** Stocks with malformed or conflicting bars that were counted and not used. */

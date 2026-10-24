@@ -1,0 +1,24 @@
+{
+  "_comment": "TEST DATA: invented coins in the documented CoinMarketCap /v3/cryptocurrency/listings/latest shape, matching the crypto-scan fixture's research leads. Cases: SALP shared by two coins (one matches by name); SBRV price differs; SECH same symbol, different name (unmatched); SDLT two coins with the same symbol and name (ambiguous); SCHR matched by slug only, tagged memes; SNEW absent (not found); SSTL missing market cap; SGAP snapshot 40 minutes apart. NOT market data.",
+  "status": { "timestamp": "2026-10-21T11:58:00.000Z", "error_code": 0, "error_message": null, "elapsed": 12, "credit_count": 2 },
+  "data": [
+    { "id": 900001, "name": "Synthetic Alpha", "symbol": "SALP", "slug": "synthetic-alpha", "cmc_rank": 38, "tags": ["layer-1", "test-data"],
+      "quote": { "USD": { "price": 1.236, "volume_24h": 395000000, "percent_change_24h": 18.0, "market_cap": 4180000000, "last_updated": "2026-10-21T11:57:30.000Z" } } },
+    { "id": 900002, "name": "Synthetic Alpha Classic", "symbol": "SALP", "slug": "synthetic-alpha-classic", "cmc_rank": 1702, "tags": [],
+      "quote": { "USD": { "price": 0.0021, "volume_24h": 15000, "percent_change_24h": -3.1, "market_cap": 640000, "last_updated": "2026-10-21T11:55:00.000Z" } } },
+    { "id": 900003, "name": "Synthetic Bravo", "symbol": "SBRV", "slug": "synthetic-bravo", "cmc_rank": 95, "tags": [{ "slug": "defi", "name": "DeFi" }],
+      "quote": { "USD": { "price": 0.6123, "volume_24h": 81000000, "percent_change_24h": -7.0, "market_cap": 1150000000, "last_updated": "2026-10-21T11:57:00.000Z" } } },
+    { "id": 900004, "name": "Echo Protocol", "symbol": "SECH", "slug": "echo-protocol", "cmc_rank": 410, "tags": [],
+      "quote": { "USD": { "price": 0.77, "volume_24h": 3000000, "percent_change_24h": 1.0, "market_cap": 90000000, "last_updated": "2026-10-21T11:56:00.000Z" } } },
+    { "id": 900005, "name": "Synthetic Delta", "symbol": "SDLT", "slug": "synthetic-delta", "cmc_rank": 150, "tags": [],
+      "quote": { "USD": { "price": 0.0411, "volume_24h": 59000000, "percent_change_24h": 1.0, "market_cap": 701000000, "last_updated": "2026-10-21T11:57:00.000Z" } } },
+    { "id": 900006, "name": "Synthetic Delta", "symbol": "SDLT", "slug": "synthetic-delta-v2", "cmc_rank": 990, "tags": [],
+      "quote": { "USD": { "price": 0.0399, "volume_24h": 900000, "percent_change_24h": 0.5, "market_cap": 8000000, "last_updated": "2026-10-21T11:57:00.000Z" } } },
+    { "id": 900007, "name": "Synthetic Charlie Token", "symbol": "SCHR", "slug": "syn-charlie", "cmc_rank": 170, "tags": ["memes", "test-data"],
+      "quote": { "USD": { "price": 3.18, "volume_24h": 29000000, "percent_change_24h": 9.0, "market_cap": 602000000, "last_updated": "2026-10-21T11:57:00.000Z" } } },
+    { "id": 900008, "name": "Synthetic Stale", "symbol": "SSTL", "slug": "synthetic-stale", "cmc_rank": 120, "tags": [],
+      "quote": { "USD": { "price": 5.62, "volume_24h": 40000000, "percent_change_24h": 11.0, "market_cap": null, "last_updated": "2026-10-21T11:57:00.000Z" } } },
+    { "id": 900009, "name": "Synthetic Gap", "symbol": "SGAP", "slug": "synthetic-gap", "cmc_rank": 110, "tags": [],
+      "quote": { "USD": { "price": 9.05, "volume_24h": 50000000, "percent_change_24h": 10.0, "market_cap": 1395000000, "last_updated": "2026-10-21T11:17:00.000Z" } } }
+  ]
+}

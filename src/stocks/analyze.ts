@@ -108,6 +108,7 @@ export function runStockScan(data: NormalizedStockDataset, now: Date, rules: Sto
   const belowThreshold: StockCandidate[] = [];
   let passedFilters = 0;
   let notCandidates = 0;
+  const noPattern: { stock: StockSnapshot; metrics: StockMetrics }[] = [];
   const notEvaluated = { requestFailed: 0, notRequested: 0 };
   const sessionDates: string[] = []; // latest session of each stock that passed all filters
 
@@ -129,6 +130,7 @@ export function runStockScan(data: NormalizedStockDataset, now: Date, rules: Sto
     const kind = classifyStock(m, rules);
     if (kind === null) {
       notCandidates++;
+      noPattern.push({ stock: s, metrics: m });
       continue;
     }
     const c: StockCandidate = { stock: s, metrics: m, kind, ...scoreStock(m, kind), risks: stockRisks(m, kind, rules) };
@@ -146,6 +148,8 @@ export function runStockScan(data: NormalizedStockDataset, now: Date, rules: Sto
     overLimit: [...movers.slice(rules.maxMovers), ...watch.slice(rules.maxWatchlist)],
     belowThreshold,
     notCandidates,
+    // Additive (dashboard budget view): the stocks behind `notCandidates`, by symbol.
+    noPattern: noPattern.sort((x, y) => (x.stock.symbol < y.stock.symbol ? -1 : 1)),
     excluded: excluded.sort((x, y) => (x.symbol < y.symbol ? -1 : x.symbol > y.symbol ? 1 : 0)),
     invalidBars: data.stocks.filter((s) => s.invalidBars > 0).map((s) => ({ symbol: s.symbol, count: s.invalidBars })).sort((x, y) => (x.symbol < y.symbol ? -1 : 1)),
     notEvaluated,

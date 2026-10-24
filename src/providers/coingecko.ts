@@ -27,7 +27,7 @@
 import { COINGECKO_INFO, authStopReason } from '../core/errors.ts';
 import { terminalSafe } from '../core/format.ts';
 import { DAY_MS } from '../core/time.ts';
-import { computeMetrics, exclusionReasons } from '../scanner/analyze.ts';
+import { activitySignals, computeMetrics, exclusionReasons } from '../scanner/analyze.ts';
 import { normalizeDataset } from '../scanner/normalize.ts';
 import { SCAN_RULES, type ScanRules } from '../scanner/rules.ts';
 import type { HistoryCoverage, HistoryStatus, RawAsset } from '../scanner/types.ts';
@@ -79,6 +79,12 @@ export function parseMarkets(json: unknown): RawAsset[] {
       lastUpdated: item.last_updated,
       dailyVolumes: null,
       tags: [],
+      // Same response, already fetched: informational fields (never scored).
+      marketCapRank: item.market_cap_rank,
+      high24h: item.high_24h,
+      low24h: item.low_24h,
+      athChangePct: item.ath_change_percentage,
+      athDate: item.ath_date,
     } as RawAsset;
   });
 }
@@ -272,12 +278,18 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   // Pre-filter with the scanner's own rules, ignoring the history-based reasons.
   const historyCodes = new Set(['insufficient_history', 'unreliable_history']);
   const probe = normalizeDataset({ dataset: { kind: 'live', label: 'pre-filter', source: COINGECKO_SOURCE, asOf: fetchedAt.toISOString(), attribution: COINGECKO_ATTRIBUTION }, assets }, rules);
-  const eligible: string[] = [];
+  const eligibleInfo: { id: string; signals: number }[] = [];
   for (const a of probe.assets) {
-    if (eligible.includes(a.id)) continue;
-    const reasons = exclusionReasons(a, computeMetrics(a, fetchedAt), rules).filter((r) => !historyCodes.has(r.code));
-    if (reasons.length === 0) eligible.push(a.id);
+    if (eligibleInfo.some((e) => e.id === a.id)) continue;
+    const m = computeMetrics(a, fetchedAt);
+    const reasons = exclusionReasons(a, m, rules).filter((r) => !historyCodes.has(r.code));
+    if (reasons.length === 0) eligibleInfo.push({ id: a.id, signals: activitySignals(a, m, rules).length });
   }
+  // Step 2: request histories for assets showing snapshot activity first (more signals first), then
+  // the rest in market-cap order (a stable sort keeps that order within ties). Same requests, same
+  // limit: under a tight limit the budget goes to unusual activity, not only to the largest coins.
+  const eligible = [...eligibleInfo].sort((x, y) => y.signals - x.signals).map((e) => e.id);
+  const prioritized = eligibleInfo.filter((e) => e.signals > 0).length;
   const skippedByFilters = new Set(probe.assets.map((a) => a.id)).size - eligible.length;
 
   const history = new Map<string, unknown[]>();
@@ -376,6 +388,7 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
     `${assets.length} assets from /coins/markets; ${client.callsMade} of ${maxCalls} allowed requests used.`,
     `Volume history fetched for ${history.size} of ${eligible.length} assets that passed the non-history filters; ${skippedByFilters} assets were already excluded by those filters and their history was not requested.`,
   ];
+  if (prioritized > 0) notes.push(`History was requested first for the ${prioritized} eligible asset(s) showing snapshot activity (large 24h or 7-day move, or high turnover), then for the rest in market-cap order.`);
   if (fromCache > 0) notes.push(`Volume history for ${fromCache} of those asset(s) was reused from the local cache (fetched earlier this UTC day; completed days only), so no request was made for it.`);
   if (cacheWriteFailures > 0) notes.push(`${cacheWriteFailures} fetched history response(s) could not be written to the local cache; they will be requested again next run.`);
   if (failed.length > 0) notes.push(`History request failed for ${failed.length} asset(s) (${idList(failed)}); they are excluded as history request failed and were not evaluated.`);

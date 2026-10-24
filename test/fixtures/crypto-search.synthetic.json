@@ -1,0 +1,23 @@
+{
+  "_comment": "TEST DATA: invented coins for the dashboard's offline crypto search. 'search' has the CoinGecko /search response shape; 'markets' has the /coins/markets shape. SALP is deliberately shared by three different coins. NOT market data.",
+  "asOf": "2026-10-21T11:58:00Z",
+  "search": {
+    "coins": [
+      { "id": "syn-alpha", "name": "Synthetic Alpha", "api_symbol": "syn-alpha", "symbol": "SALP", "market_cap_rank": 41 },
+      { "id": "syn-bravo", "name": "Synthetic Bravo", "api_symbol": "syn-bravo", "symbol": "SBRV", "market_cap_rank": 77 },
+      { "id": "syn-echo", "name": "Synthetic Echo", "api_symbol": "syn-echo", "symbol": "SECH", "market_cap_rank": 102 },
+      { "id": "syn-outside", "name": "Synthetic Outsider", "api_symbol": "syn-outside", "symbol": "SOUT", "market_cap_rank": 612 },
+      { "id": "syn-alpha-classic", "name": "Synthetic Alpha Classic", "api_symbol": "syn-alpha-classic", "symbol": "SALP", "market_cap_rank": 1880 },
+      { "id": "syn-alpha-bridged", "name": "Synthetic Alpha (Bridged)", "api_symbol": "syn-alpha-bridged", "symbol": "SALP", "market_cap_rank": null },
+      { "id": "syn-dormant", "name": "Synthetic Dormant", "api_symbol": "syn-dormant", "symbol": "SDRM", "market_cap_rank": null }
+    ]
+  },
+  "markets": [
+    { "id": "syn-alpha", "symbol": "salp", "name": "Synthetic Alpha", "current_price": 1.23, "market_cap": 820000000, "market_cap_rank": 41, "total_volume": 80000000, "high_24h": 1.27, "low_24h": 1.03, "price_change_percentage_24h": 18.2, "price_change_percentage_7d_in_currency": 25.1, "last_updated": "2026-10-21T11:57:00.000Z" },
+    { "id": "syn-bravo", "symbol": "sbrv", "name": "Synthetic Bravo", "current_price": 0.5821, "market_cap": 350000000, "market_cap_rank": 77, "total_volume": 28000000, "high_24h": 0.66, "low_24h": 0.57, "price_change_percentage_24h": -11.4, "price_change_percentage_7d_in_currency": -15.3, "last_updated": "2026-10-21T11:57:00.000Z" },
+    { "id": "syn-echo", "symbol": "sech", "name": "Synthetic Echo", "current_price": 12.85, "market_cap": 210000000, "market_cap_rank": 102, "total_volume": 12600000, "high_24h": 12.95, "low_24h": 12.7, "price_change_percentage_24h": 0.4, "price_change_percentage_7d_in_currency": -1.2, "last_updated": "2026-10-21T11:57:00.000Z" },
+    { "id": "syn-outside", "symbol": "sout", "name": "Synthetic Outsider", "current_price": 0.0437, "market_cap": 21000000, "market_cap_rank": 612, "total_volume": 1900000, "high_24h": 0.046, "low_24h": 0.041, "price_change_percentage_24h": 6.3, "price_change_percentage_7d_in_currency": 2.2, "last_updated": "2026-10-21T11:55:00.000Z" },
+    { "id": "syn-alpha-classic", "symbol": "salp", "name": "Synthetic Alpha Classic", "current_price": 0.0021, "market_cap": 640000, "market_cap_rank": 1880, "total_volume": 15000, "high_24h": 0.0023, "low_24h": 0.002, "price_change_percentage_24h": -3.1, "price_change_percentage_7d_in_currency": null, "last_updated": "2026-10-21T10:40:00.000Z" },
+    { "id": "syn-alpha-bridged", "symbol": "salp", "name": "Synthetic Alpha (Bridged)", "current_price": null, "market_cap": 0, "market_cap_rank": null, "total_volume": null, "high_24h": null, "low_24h": null, "price_change_percentage_24h": null, "price_change_percentage_7d_in_currency": null, "last_updated": null }
+  ]
+}
