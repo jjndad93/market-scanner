@@ -75,7 +75,7 @@ test('live: needs confirmation, then exactly one CoinGecko request; the second o
   const f = counting((url) => ({ status: 200, body: url.includes('/coins/markets') ? [coin] : url.includes('/tickers') ? REAL_SHAPE : chart }));
   const env = { COINGECKO_DEMO_API_KEY: KEY };
   const svc = createScanService({ env, fetch: f.fn, clock: () => NOW, sleep: async () => {} }, 160, {}, {}, {}, { minIntervalMs: 0 });
-  const scan = await handleRequest(post('/api/scan/crypto', { mode: 'live', maxRequests: 2, confirmLive: true }), svc, env, PORT);
+  const scan = await handleRequest(post('/api/scan/crypto', { mode: 'live', maxRequests: 3, confirmLive: true }), svc, env, PORT);
   assert.equal(scan.status, 200, scan.body);
   const before = f.urls.length;
   const unconfirmed = await handleRequest(post('/api/where-to-buy/crypto', { key: 'crypto:akedo' }), svc, env, PORT);

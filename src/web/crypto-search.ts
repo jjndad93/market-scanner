@@ -165,7 +165,7 @@ export function createCryptoSearchService(deps: SearchDeps, opts: { getLastCrypt
     if (!last) return { inLastScan: null, scanNote: 'No crypto scan has run in this dashboard session.' };
     const row = last.rows.find((r) => r.id === id);
     if (!row) {
-      return { inLastScan: null, scanNote: `Not among the ${last.rows.length} assets the latest ${last.mode} crypto scan evaluated (the scan covers CoinGecko's top 250 by market cap and applies its filters).` };
+      return { inLastScan: null, scanNote: `Not among the ${last.rows.length} assets the latest ${last.mode} crypto scan evaluated (the scan covers CoinGecko's top 500 by market cap and applies its filters).` };
     }
     return { inLastScan: { mode: last.mode, status: row.signal.status, category: row.signal.category, score: row.signal.score, maxScore: row.signal.maxScore }, scanNote: null };
   }

@@ -37,7 +37,7 @@
       <div class="panel-head">
         <div>
           <h2 id="scan-title">Scan</h2>
-          <p class="muted" id="market-blurb">Movers and watchlist candidates from the CoinGecko top 250, using the existing scanner rules.</p>
+          <p class="muted" id="market-blurb">Movers and watchlist candidates from the CoinGecko top 500, using the existing scanner rules.</p>
         </div>
         <div class="actions">
           <button id="scan-btn" class="primary" type="button">Scan Crypto</button>
@@ -68,6 +68,14 @@
           <input id="unit-limit" type="number" min="0" step="any" value="50" inputmode="decimal">
           <label class="inline"><input id="no-unit-limit" type="checkbox"> No unit-price limit</label>
         </div>
+        <label class="budget">
+          <span>Direction</span>
+          <select id="direction">
+            <option value="up" selected>Gaining only (up over 24h)</option>
+            <option value="down">Falling only</option>
+            <option value="both">Gaining and falling</option>
+          </select>
+        </label>
         <label class="budget">
           <span>Show</span>
           <select id="preference">

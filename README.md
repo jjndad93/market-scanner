@@ -247,7 +247,7 @@ are requested first, then the rest in market-cap order. The number of requests, 
 cache and the retry rules are unchanged, and the live notes say how many were prioritized. With
 enough requests the same histories are fetched as before.
 
-**Coverage.** The scan still covers one `/coins/markets` page: CoinGecko's top 250 by market cap.
+**Coverage.** The scan covers two `/coins/markets` pages: CoinGecko's top 500 by market cap (`MARKET_PAGES` in `src/providers/coingecko.ts`). If page 2 fails or the request limit is reached, the scan continues with page 1 and says so in its notes.
 Coins outside it are not scanned; use **Find a crypto asset** to look one up. Incomplete scans
 (request limit, failures) are reported in the leads' notes.
 
@@ -636,7 +636,7 @@ points used), `prior-intraday`, `today-midnight`, `today-after-midnight`, `futur
 00:00 UTC tomorrow), or `invalid`, and repeated timestamps are flagged as duplicates. Provider
 ids are printed with control characters escaped (as `\uXXXX`).
 
-**Live mode** uses the CoinGecko Demo API: one `/coins/markets` request (top 250 by market cap)
+**Live mode** uses the CoinGecko Demo API: two `/coins/markets` requests (top 500 by market cap)
 and then one `/coins/{id}/market_chart` request (91 days, no `interval` parameter, so the
 documented auto-granularity returns daily points at 00:00 UTC; only the latest 30 are used) per
 asset that passes every

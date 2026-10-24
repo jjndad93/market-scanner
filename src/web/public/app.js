@@ -6,7 +6,7 @@ import { coverageFigures, coverageSentences, dashboardWording, exclusionBreakdow
 const $ = (id) => document.getElementById(id);
 const state = { status: null, running: false, lastRequest: null, last: null, news: new Map(), wtb: new Map(), cmc: null };
 const MARKET = {
-  crypto: { button: 'Scan Crypto', blurb: 'Movers and watchlist candidates from the CoinGecko top 250, using the existing scanner rules.', keyFlag: 'cryptoKeyConfigured', keyEnv: 'COINGECKO_DEMO_API_KEY', provider: 'CoinGecko', pace: 'about 0.7 s apart' },
+  crypto: { button: 'Scan Crypto', blurb: 'Movers and watchlist candidates from the CoinGecko top 500, using the existing scanner rules.', keyFlag: 'cryptoKeyConfigured', keyEnv: 'COINGECKO_DEMO_API_KEY', provider: 'CoinGecko', pace: 'about 0.7 s apart' },
   stocks: { button: 'Scan US Stocks', blurb: 'Movers and watchlist candidates from a fixed list of 20 large US stocks (end-of-day bars).', keyFlag: 'stocksKeyConfigured', keyEnv: 'POLYGON_API_KEY', provider: 'Massive', pace: 'about 12.5 s apart (free plan: 5 per minute)' },
 };
 
@@ -128,6 +128,13 @@ function currentRequest() {
 }
 
 // ---- results -----------------------------------------------------------------------------------
+
+/** Direction filter (display only): keeps coins whose short-period change matches the choice. */
+function keepMove(pct) {
+  const dir = $('direction').value;
+  if (dir === 'both') return true;
+  return pct !== null && pct !== undefined && (dir === 'up' ? pct > 0 : pct < 0);
+}
 
 function stat(label, value, sub) {
   return el('div', { class: 'stat' }, el('div', { class: 'label' }, label), el('div', { class: 'value' }, value), sub ? el('div', { class: 'sub' }, sub) : null);
@@ -467,7 +474,7 @@ function discoveryView(d, coverageShown) {
   const box = el('div', { class: 'discovery' }, el('h3', {}, 'Research leads (discovery)'));
   for (const key of ['highPriority', 'watchlist', 'insufficientData']) {
     const [title, blurb] = TIER[key];
-    const list = d[key];
+    const list = d[key].filter((e) => keepMove(e.change24hPct));
     box.append(el('details', { class: 'section', open: key === 'highPriority' ? '' : null },
       el('summary', {}, `${title} (${list.length})`),
       el('p', { class: 'muted small' }, blurb),
@@ -587,11 +594,17 @@ function render() {
   if (s.nextStep) root.append(el('p', { class: 'kv' }, el('b', {}, 'Next step: '), dashboardWording(s.nextStep)));
 
   const controls = parseBudgetControls($('total-budget').value, $('unit-limit').value, $('no-unit-limit').checked, $('preference').value);
-  const view = 'error' in controls ? null : buildView(data.rows, controls);
+  const shownRows = data.rows.filter((row) => keepMove(row.change.short.value));
+  const hiddenByDirection = data.rows.length - shownRows.length;
+  const view = 'error' in controls ? null : buildView(shownRows, controls);
   const cov = r.dataset.coverage;
   root.append(el('p', { class: 'summary-line' }, [
-    `${s.qualified} signal(s)${s.qualifiedNames.length ? ` (${s.qualifiedNames.join(', ')})` : ''}`,
+    (() => {
+      const names = shownRows.filter((row) => row.signal.status === 'qualified').map((row) => row.symbol);
+      return `${names.length} signal(s) shown${names.length ? ` (${names.join(', ')})` : ''}`;
+    })(),
     view ? `${view.counts.withinBudget} within your limits` : null,
+    hiddenByDirection ? `${hiddenByDirection} hidden by Direction (${$('direction').value === 'up' ? 'falling or flat' : $('direction').value === 'down' ? 'rising or flat' : ''})` : null,
     `${data.rows.length} evaluated of ${r.universe} scanned`,
     cov ? `history ${cov.historyFetched} of ${cov.historyEligible}` : null,
     cov ? `${cov.requestsUsed} of ${cov.requestLimit} API requests used` : synthetic ? '0 API requests (offline)' : null,
@@ -716,6 +729,7 @@ function renderSearchResults(d) {
   const root = $('search-results');
   $('asset-detail').replaceChildren();
   root.replaceChildren();
+  root.hidden = false;
   if (d.dataKind === 'test_data') root.append(el('div', { class: 'banner test' }, 'TEST DATA: invented coins from the offline search fixture. NOT market data.'));
   if (d.guidance) root.append(el('p', { class: d.results.length ? 'warning' : 'empty' }, d.guidance));
   for (const a of d.ambiguousSymbols) {
@@ -761,6 +775,15 @@ const evText = (e, fmt) => (e.value === null ? `not available${e.note ? ` (${e.n
 function renderAsset(coin, d) {
   const root = $('asset-detail');
   root.replaceChildren();
+  // The chosen coin replaces the result list; "Back" shows the list again (no request).
+  const list = $('search-results');
+  list.hidden = true;
+  const back = el('button', { type: 'button', class: 'linkish' }, '← Back to all search results');
+  back.addEventListener('click', () => {
+    root.replaceChildren();
+    list.hidden = false;
+  });
+  root.append(back);
   const a = d.asset;
   const head = el('h3', {}, `${coin.name} (${coin.symbol})`);
   const card = el('div', { class: 'asset-card' }, head, el('div', { class: 'sym' }, `CoinGecko id: ${coin.id}`));
@@ -802,7 +825,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('input[name="mode"], input[name="market"]').forEach((r) => r.addEventListener('change', updateControls));
   $('max-requests').addEventListener('input', updateControls);
   // Budget controls re-filter the last result only: no request, no rescan.
-  for (const id of ['total-budget', 'unit-limit', 'no-unit-limit', 'preference']) {
+  for (const id of ['total-budget', 'unit-limit', 'no-unit-limit', 'preference', 'direction']) {
     $(id).addEventListener('input', () => { updateControls(); render(); });
     $(id).addEventListener('change', () => { updateControls(); render(); });
   }

@@ -41,6 +41,8 @@ export const COINGECKO_SOURCE = 'CoinGecko Demo API (/coins/markets, /coins/{id}
 export const COINGECKO_ATTRIBUTION = 'Data provided by CoinGecko (https://www.coingecko.com)';
 /** Per-run request cap (markets + history, retries included). */
 export const DEFAULT_MAX_CALLS = 160;
+/** Market pages of 250 coins each that a crypto scan requests: 2 = the top 500 by market cap (one extra request). */
+export const MARKET_PAGES = 2;
 /** Spacing between requests: about 85/min, under the Demo plan's 100 calls/min. */
 export const DEFAULT_MIN_INTERVAL_MS = 700;
 /**
@@ -228,6 +230,8 @@ export interface LiveFetchOptions {
   diagnostics?: boolean;
   /** S6: reuse fresh histories from this cache instead of requesting them; store new ones. */
   historyCache?: HistoryCache;
+  /** How many 250-coin market pages to request (default 1; the scan command passes MARKET_PAGES). */
+  marketPages?: number;
 }
 
 /** A live dataset ready for normalizeDataset, plus counts for the caller. */
@@ -269,10 +273,27 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
   const minIntervalMs = options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
   const sleep = options.sleep ?? realSleep;
 
-  const markets = await client.getJson('/coins/markets', {
-    vs_currency: 'usd', order: 'market_cap_desc', per_page: '250', page: '1', price_change_percentage: '24h,7d', sparkline: 'false',
-  });
-  const assets = parseMarkets(markets);
+  // The universe: the top MARKET_PAGES x 250 coins by market cap. Page 1 must succeed; a later page
+  // is skipped (with a note) if the request limit is reached or it fails, and the scan continues.
+  const marketParams = (page: number) => ({ vs_currency: 'usd', order: 'market_cap_desc', per_page: '250', page: String(page), price_change_percentage: '24h,7d', sparkline: 'false' });
+  const assets = parseMarkets(await client.getJson('/coins/markets', marketParams(1)));
+  const universeNotes: string[] = [];
+  const pages = options.marketPages ?? 1;
+  for (let page = 2; page <= pages; page++) {
+    if (client.callsMade >= maxCalls) {
+      universeNotes.push(`Market page ${page} (coins ranked ${(page - 1) * 250 + 1}-${page * 250}) was not requested: the per-run limit of ${maxCalls} requests was reached.`);
+      break;
+    }
+    await sleep(minIntervalMs);
+    try {
+      const seen = new Set(assets.map((a) => a.id));
+      for (const a of parseMarkets(await client.getJson('/coins/markets', marketParams(page)))) if (!seen.has(a.id)) assets.push(a);
+    } catch (err) {
+      if (!(err instanceof HttpError) && !(err instanceof ProviderResponseError)) throw err;
+      universeNotes.push(`Market page ${page} (coins ranked ${(page - 1) * 250 + 1}-${page * 250}) could not be used (${err instanceof HttpError ? failureOutcome(err) : 'unusable response'}); the scan continues with the earlier page(s).`);
+      break;
+    }
+  }
   const fetchedAt = clock();
 
   // Pre-filter with the scanner's own rules, ignoring the history-based reasons.
@@ -388,6 +409,7 @@ export async function fetchLiveDataset(options: LiveFetchOptions): Promise<LiveD
     `${assets.length} assets from /coins/markets; ${client.callsMade} of ${maxCalls} allowed requests used.`,
     `Volume history fetched for ${history.size} of ${eligible.length} assets that passed the non-history filters; ${skippedByFilters} assets were already excluded by those filters and their history was not requested.`,
   ];
+  notes.push(...universeNotes);
   if (prioritized > 0) notes.push(`History was requested first for the ${prioritized} eligible asset(s) showing snapshot activity (large 24h or 7-day move, or high turnover), then for the rest in market-cap order.`);
   if (fromCache > 0) notes.push(`Volume history for ${fromCache} of those asset(s) was reused from the local cache (fetched earlier this UTC day; completed days only), so no request was made for it.`);
   if (cacheWriteFailures > 0) notes.push(`${cacheWriteFailures} fetched history response(s) could not be written to the local cache; they will be requested again next run.`);

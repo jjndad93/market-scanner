@@ -322,7 +322,7 @@ function buildDiscovery(
 
   const notes: string[] = [];
   notes.push(ctx.dataset.kind === 'live'
-    ? `Coverage: the ${ctx.universe} asset records in this snapshot (CoinGecko's top 250 by market cap, one page). Coins outside it are not scanned; use "Find a crypto asset" to look one up.`
+    ? `Coverage: the ${ctx.universe} asset records in this snapshot (CoinGecko's top 500 by market cap, two pages). Coins outside it are not scanned; use "Find a crypto asset" to look one up.`
     : `Coverage: the ${ctx.universe} asset records in the synthetic fixture (TEST DATA).`);
   notes.push(`${ctx.evaluated} asset(s) passed every filter and were evaluated against their own volume baseline.`);
   const cov = ctx.dataset.coverage;

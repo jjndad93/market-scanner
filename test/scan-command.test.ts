@@ -114,7 +114,7 @@ test('--live with a key runs end to end through the mocked provider, with attrib
   const f = liveFetch();
   const t = deps({ env: { COINGECKO_DEMO_API_KEY: KEY }, fetch: f.fn });
   assert.equal(await runScanCommand(['crypto', '--live'], t.d), 0, t.err.join('\n'));
-  assert.equal(f.urls.length, 2);
+  assert.equal(f.urls.length, 3); // market pages 1 and 2 (top 500) + 1 history
   assert.ok(f.urls[0]!.startsWith('https://api.coingecko.com/api/v3/coins/markets?'));
   assert.ok(f.urls.every((u) => !u.includes(KEY)));
   assert.ok(f.headers.every((h) => h['x-cg-demo-api-key'] === KEY));
@@ -291,18 +291,18 @@ test('S6: a second live run on the same UTC day reuses cached histories from the
     const env = { COINGECKO_DEMO_API_KEY: KEY, LOCALAPPDATA: dir };
     const first = liveFetch();
     const one = deps({ env, fetch: first.fn });
-    assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2'], one.d), 0, one.err.join('\n'));
-    assert.equal(first.urls.length, 2); // markets + history
+    assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '3'], one.d), 0, one.err.join('\n'));
+    assert.equal(first.urls.length, 3); // 2 market pages + history
     const files = readdirSync(join(dir, 'market-scanner', 'coingecko-history'));
     assert.equal(files.length, 1);
     assert.ok(!files[0]!.includes('syn-live'), 'file names never contain provider ids');
 
     const second = liveFetch();
     const two = deps({ env, fetch: second.fn });
-    assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2', '--json'], two.d), 0, two.err.join('\n'));
-    assert.equal(second.urls.length, 1); // markets only
+    assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '3', '--json'], two.d), 0, two.err.join('\n'));
+    assert.equal(second.urls.length, 2); // 2 market pages only
     const result = JSON.parse(two.out.join('\n'));
-    assert.deepEqual([result.dataset.coverage.historyFetched, result.dataset.coverage.historyFromCache, result.dataset.coverage.requestsUsed], [1, 1, 1]);
+    assert.deepEqual([result.dataset.coverage.historyFetched, result.dataset.coverage.historyFromCache, result.dataset.coverage.requestsUsed], [1, 1, 2]);
     assert.deepEqual(result.movers.map((c: { asset: { id: string } }) => c.asset.id), ['syn-live']);
     for (const s of [one.out.join(''), one.err.join(''), two.out.join(''), two.err.join('')]) assert.ok(!s.includes(KEY));
   } finally {
@@ -312,7 +312,7 @@ test('S6: a second live run on the same UTC day reuses cached histories from the
 
 test('partial coverage: a capped live run reports coverage in JSON and text, and still exits 0', async () => {
   // SYNTHETIC: two eligible coins that match no pattern (flat price, volume at its median); a cap
-  // of 2 leaves room for the markets request and one history request only.
+  // of 3 leaves room for the two market-page requests and one history request only.
   const coinRow = (id: string) => ({ id, symbol: id.slice(4), name: `Live-shaped ${id}`, current_price: 5, market_cap: 1e9, total_volume: 50e6, price_change_percentage_24h: 0.5, price_change_percentage_7d_in_currency: 1, last_updated: '2026-10-21T11:59:00Z' });
   const urls: string[] = [];
   const fn: FetchLike = async (url) => {
@@ -323,22 +323,22 @@ test('partial coverage: a capped live run reports coverage in JSON and text, and
     return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(body) };
   };
   const json = deps({ env: { COINGECKO_DEMO_API_KEY: KEY }, fetch: fn });
-  assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2', '--json'], json.d), 0, json.err.join('\n'));
-  assert.equal(urls.length, 2);
+  assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '3', '--json'], json.d), 0, json.err.join('\n'));
+  assert.equal(urls.length, 3);
   const result = JSON.parse(json.out.join('\n'));
   assert.deepEqual(result.dataset.coverage, {
     historyEligible: 2, historyFetched: 1, historyFromCache: 0, historyRequestFailed: 0, historyNotRequested: 1, complete: false,
-    stopReason: 'the per-run limit of 2 requests was reached', requestsUsed: 2, requestLimit: 2,
+    stopReason: 'the per-run limit of 3 requests was reached', requestsUsed: 3, requestLimit: 3,
   });
   assert.deepEqual(result.excluded.map((e: { id: string; reasons: { code: string }[] }) => [e.id, e.reasons.map((r) => r.code)]), [['syn-two', ['history_not_requested']]]);
   assert.equal(result.passedFilters, 1);
 
   urls.length = 0;
   const text = deps({ env: { COINGECKO_DEMO_API_KEY: KEY }, fetch: fn });
-  assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '2'], text.d), 0, text.err.join('\n'));
-  assert.equal(urls.length, 2);
+  assert.equal(await runScanCommand(['crypto', '--live', '--max-requests', '3'], text.d), 0, text.err.join('\n'));
+  assert.equal(urls.length, 3);
   const flat = text.out.join('\n').replace(/\s+/g, ' ');
-  assert.ok(flat.includes('History coverage: fetched for 1 of 2 assets that passed the non-history filters; 0 failed; 1 not requested (the per-run limit of 2 requests was reached). PARTIAL SCAN.'), flat);
+  assert.ok(flat.includes('History coverage: fetched for 1 of 2 assets that passed the non-history filters; 0 failed; 1 not requested (the per-run limit of 3 requests was reached). PARTIAL SCAN.'), flat);
   assert.ok(flat.includes('so this is not a market-wide result.'), flat);
   assert.ok(flat.includes('Universe: 2 assets; 1 passed all filters; 1 excluded (1 not evaluated: history not requested or failed).'), flat);
   assert.ok(flat.includes('history not requested (request/rate limit): TWO'), flat);

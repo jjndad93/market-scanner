@@ -9,6 +9,7 @@ import {
   type ShownPoint,
   fetchLiveDataset,
   terminalSafe,
+  MARKET_PAGES,
 } from '../providers/coingecko.ts';
 import { COINGECKO_INFO, nextStepFor } from '../core/errors.ts';
 import { createFileHistoryCache, historyCacheDir } from '../providers/history-cache.ts';
@@ -46,7 +47,7 @@ export const MISSING_KEY_NEXT_STEP = 'Next step: set it once under Start > "Edit
 export const SCAN_OVERVIEW = `Usage: node src/cli.ts scan <market> [flags]      (add --help after a market for its flags)
 
 Markets:
-  crypto    CoinGecko top 250 by market cap. Live key: ${COINGECKO_KEY_ENV} (free Demo key).
+  crypto    CoinGecko top 500 by market cap (2 market pages). Live key: ${COINGECKO_KEY_ENV} (free Demo key).
   stocks    Fixed list of 20 large US stocks, Massive end-of-day bars. Live key: POLYGON_API_KEY
             (the free Stocks Basic plan is enough).
   options   US option chains for the stock list or --symbols. Live key: POLYGON_API_KEY on a
@@ -196,7 +197,7 @@ export async function runScanCommand(args: string[], deps: ScanCommandDeps): Pro
       // S6: histories fetched earlier this UTC day are reused from a local cache outside the project folder.
       const cacheDir = historyCacheDir(deps.env);
       const { diagnostics, ...data } = await fetchLiveDataset({
-        client, clock: deps.clock, sleep: deps.sleep, maxCalls: maxRequests, diagnostics: values['history-diagnostics'],
+        client, clock: deps.clock, sleep: deps.sleep, maxCalls: maxRequests, diagnostics: values['history-diagnostics'], marketPages: MARKET_PAGES,
         historyCache: cacheDir !== null ? createFileHistoryCache(cacheDir) : undefined,
       });
       // Diagnostics go to stderr so that --json output on stdout stays parseable.

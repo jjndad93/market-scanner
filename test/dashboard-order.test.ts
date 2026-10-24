@@ -75,8 +75,8 @@ test('with the Coverage line shown, the repeated discovery notes are dropped or 
   assert.match(coverage, new RegExp(`(^|\\. )${evaluated.split(' ')[0]} (was|were) evaluated against (its|their) own trading history`));
   // The incomplete-scan note's distinct point (where active skipped assets are listed) is kept.
   assert.match(discoveryView, /'Eligible assets whose history was not obtained \(see Coverage above\) are listed under Insufficient data if they showed snapshot activity; the rest were not evaluated\.'/);
-  // Distinct notes are untouched: scope (top 250, Find a crypto asset), scope exclusions, activity signals never scored.
-  assert.ok(notes.some((n) => /^Coverage: the \d+ asset records in this snapshot \(CoinGecko's top 250/.test(n)));
+  // Distinct notes are untouched: scope (top 500, Find a crypto asset), scope exclusions, activity signals never scored.
+  assert.ok(notes.some((n) => /^Coverage: the \d+ asset records in this snapshot \(CoinGecko's top 500/.test(n)));
   assert.ok(notes.some((n) => /^Activity signals come from the snapshot only/.test(n)));
   // Without the Coverage line (offline), every note is shown exactly as before.
   assert.match(discoveryView, /if \(!coverageShown\) return \[n\];/);

@@ -117,7 +117,7 @@ export function summarizeCryptoScan(r: ScanResult): ScanSummary {
       ? `live CoinGecko data${cov !== undefined && cov.historyFromCache > 0 ? `; ${cov.historyFromCache} volume history(ies) reused from this UTC day's local cache` : ''}`
       : 'synthetic fixture (TEST DATA), not market data',
     source: r.dataset.source,
-    scope: live ? `${r.universe} crypto assets (CoinGecko top 250 by market cap)` : `${r.universe} crypto assets in the fixture`,
+    scope: live ? `${r.universe} crypto assets (CoinGecko top 500 by market cap)` : `${r.universe} crypto assets in the fixture`,
     status: partialReasons.length > 0 ? 'partial' : 'complete',
     partialReasons,
     counts: {
