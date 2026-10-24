@@ -13,6 +13,7 @@ const MARKET = {
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
+    if (v === null || v === undefined || v === false) continue;
     if (k === 'class') node.className = v;
     else node.setAttribute(k, v);
   }
@@ -50,7 +51,7 @@ function updateControls() {
   if (live) {
     const n = Number(budget.value);
     const keyNote = state.status && !state.status[m.keyFlag] ? ` The ${m.keyEnv} environment variable is not set on the server, so a live scan will stop before any request.` : '';
-    $('live-warning-text').textContent = `A live ${market} scan uses up to ${Number.isInteger(n) && n > 0 ? n : '?'} ${m.provider} request(s), ${m.pace}. You will be asked to confirm.${keyNote}`;
+    $('live-warning-text').textContent = `A live ${market} scan uses up to ${Number.isInteger(n) && n > 0 ? n : '?'} ${m.provider} request(s), ${m.pace} (change the limit under Settings). You will be asked to confirm.${keyNote}`;
   }
   $('unit-limit').disabled = $('no-unit-limit').checked;
   for (const id of ['scan-btn', 'rerun-btn']) $(id).disabled = state.running;
@@ -164,20 +165,22 @@ function riskCell(row) {
 function rowView({ row, afford }) {
   const fit = afford.passesBudget && afford.passesUnitPrice;
   return el('tr', {},
-    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : row.symbol),
-      row.why.length ? el('details', {}, el('summary', {}, 'Why'), el('ul', {}, ...row.why.map((w) => el('li', {}, w)))) : null,
-      newsButton(row), wtbButton(row)),
+    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : row.symbol)),
     el('td', {}, el('span', { class: `chip ${row.signal.category === 'Mover' ? 'mover' : row.signal.category === 'Watchlist' ? 'watch' : 'dim'}` }, row.signal.category ?? STATUS_LABEL[row.signal.status]),
-      row.signal.category ? el('div', { class: 'sym' }, STATUS_LABEL[row.signal.status]) : null),
-    el('td', { class: 'num' }, row.signal.score === null ? '—' : `${row.signal.score}/${row.signal.maxScore}`,
-      el('div', { class: 'sym' }, row.volumeMultiple === null ? '' : `${row.volumeMultiple.toFixed(2)}x volume`)),
-    el('td', { class: 'num' }, price(row.unitPrice), el('div', { class: 'sym' }, `${when(row.priceAsOf)} · ${row.dataKind === 'test_data' ? 'TEST DATA' : 'VERIFIED DATA'}`)),
-    el('td', { class: 'num' }, afford.maxUnits.toLocaleString(), el('div', { class: 'sym' }, `≈ ${money(afford.totalCost)} before fees`)),
-    el('td', {}, el('span', { class: `chip ${fit ? 'complete' : 'partial'}` }, fit ? 'Within limits' : 'Outside limits'), afford.reason ? el('div', { class: 'sym' }, afford.reason) : null),
+      el('div', { class: 'sym' }, [row.signal.category ? STATUS_LABEL[row.signal.status] : null, row.signal.score === null ? null : `score ${row.signal.score}/${row.signal.maxScore}`, row.volumeMultiple === null ? null : `${row.volumeMultiple.toFixed(2)}x volume`].filter(Boolean).join(' · '))),
+    el('td', { class: 'num' }, price(row.unitPrice)),
     el('td', { class: `num ${signClass(row.change.short.value)}` }, `${pct(row.change.short.value)} ${row.change.short.label}`,
       el('div', { class: `sym ${signClass(row.change.long.value)}` }, `${pct(row.change.long.value)} ${row.change.long.label}`)),
-    el('td', {}, classificationCell(row.classification)),
-    el('td', {}, riskCell(row), ...row.warnings.filter((w) => !row.risk.flags.includes(w)).map((w) => el('div', { class: 'sym' }, w))));
+    el('td', {}, el('span', { class: `chip ${fit ? 'complete' : 'partial'}` }, fit ? 'Within limits' : 'Outside limits'),
+      el('div', { class: 'sym' }, `${afford.maxUnits.toLocaleString()} units ≈ ${money(afford.totalCost)} before fees`),
+      afford.reason ? el('div', { class: 'sym' }, afford.reason) : null),
+    el('td', { class: 'row-actions' },
+      el('div', { class: 'action-line' }, newsButton(row), wtbButton(row)),
+      row.why.length ? el('details', {}, el('summary', {}, 'Why'), el('ul', {}, ...row.why.map((w) => el('li', {}, w)))) : null,
+      el('details', {}, el('summary', {}, 'Category & volatility'),
+        el('div', { class: 'more' }, classificationCell(row.classification), riskCell(row),
+          ...row.warnings.filter((w) => !row.risk.flags.includes(w)).map((w) => el('div', { class: 'sym' }, w)),
+          el('div', { class: 'sym' }, `Price as of ${when(row.priceAsOf)}`)))));
 }
 
 // ---- news panel ("Why it may be moving") -------------------------------------------------------
@@ -197,7 +200,7 @@ function newsButton(row) {
   const open = state.news.get(row.key)?.open;
   const b = el('button', { type: 'button', class: 'linkish' }, open ? 'Hide news' : 'News & why it may be moving');
   b.addEventListener('click', () => toggleNews(row));
-  return el('div', {}, b);
+  return b;
 }
 
 function newsLimit() {
@@ -319,7 +322,7 @@ function newsPanelRow(row) {
       body.append(b);
     }
   }
-  return el('tr', { class: 'news-row' }, el('td', { colspan: '9' }, body));
+  return el('tr', { class: 'news-row' }, el('td', { colspan: '6' }, body));
 }
 
 // ---- where to buy -------------------------------------------------------------------------------
@@ -334,7 +337,7 @@ function wtbButton(row) {
   const open = state.wtb.get(row.key)?.open;
   const b = el('button', { type: 'button', class: 'linkish' }, open ? 'Hide where to buy' : 'Where to buy');
   b.addEventListener('click', () => toggleWtb(row));
-  return el('div', {}, b);
+  return b;
 }
 
 async function loadWtb(row, { refresh = false, confirmLive = false } = {}) {
@@ -427,7 +430,7 @@ function wtbPanelRow(row) {
       body.append(b);
     }
   }
-  return el('tr', { class: 'news-row' }, el('td', { colspan: '9' }, body));
+  return el('tr', { class: 'news-row' }, el('td', { colspan: '6' }, body));
 }
 
 // ---- discovery (crypto research leads) --------------------------------------------------------
@@ -455,8 +458,9 @@ function discoveryEntry(e) {
     x && x.warnings.length ? el('ul', { class: 'plain-warnings' }, ...x.warnings.map((w) => el('li', { class: 'plain-caution' }, `Caution: ${w.text}`))) : null,
     x && x.nextStep ? el('p', { class: 'plain-next' }, x.nextStep) : null,
     second.length ? el('ul', { class: 'plain-warnings' }, ...second.map((w) => el('li', { class: 'plain-caution' }, `Second source: ${w.text}`))) : null,
-    el('ul', { class: 'notes' }, ...e.reasons.map((x) => el('li', {}, x))),
-    e.caveats.length ? el('ul', { class: 'notes caveats' }, ...e.caveats.map((x) => el('li', { class: 'flag' }, x))) : null);
+    el('details', {}, el('summary', {}, 'Evidence'),
+      el('ul', { class: 'notes' }, ...e.reasons.map((x) => el('li', {}, x))),
+      e.caveats.length ? el('ul', { class: 'notes caveats' }, ...e.caveats.map((x) => el('li', { class: 'flag' }, x))) : null));
 }
 
 function discoveryView(d, coverageShown) {
@@ -464,7 +468,7 @@ function discoveryView(d, coverageShown) {
   for (const key of ['highPriority', 'watchlist', 'insufficientData']) {
     const [title, blurb] = TIER[key];
     const list = d[key];
-    box.append(el('details', { class: 'section', open: '' },
+    box.append(el('details', { class: 'section', open: key === 'highPriority' ? '' : null },
       el('summary', {}, `${title} (${list.length})`),
       el('p', { class: 'muted small' }, blurb),
       list.length ? el('ul', { class: 'leads' }, ...list.map(discoveryEntry)) : el('p', { class: 'empty' }, 'None in this scan.')));
@@ -585,21 +589,26 @@ function render() {
   const controls = parseBudgetControls($('total-budget').value, $('unit-limit').value, $('no-unit-limit').checked, $('preference').value);
   const view = 'error' in controls ? null : buildView(data.rows, controls);
   const cov = r.dataset.coverage;
-  root.append(el('div', { class: 'grid' },
-    stat('Qualified signals', String(s.qualified), s.qualifiedNames.join(', ') || 'none'),
-    stat('Evaluated', String(data.rows.length), `${r.universe} scanned · ${r.excluded.length} excluded`),
-    view ? stat('Within your limits', String(view.counts.withinBudget), `${view.counts.qualifiedWithinBudget} of ${view.counts.qualified} qualified`) : null,
-    cov ? stat('History coverage', `${cov.historyFetched} of ${cov.historyEligible}`, `${cov.historyFromCache} from cache · ${cov.historyNotRequested} not requested`) : null,
-    cov ? stat('API requests', `${cov.requestsUsed} of ${cov.requestLimit}`, 'retries included') : stat('API requests', synthetic ? '0' : 'see notes', synthetic ? 'offline fixture' : '')));
+  root.append(el('p', { class: 'summary-line' }, [
+    `${s.qualified} signal(s)${s.qualifiedNames.length ? ` (${s.qualifiedNames.join(', ')})` : ''}`,
+    view ? `${view.counts.withinBudget} within your limits` : null,
+    `${data.rows.length} evaluated of ${r.universe} scanned`,
+    cov ? `history ${cov.historyFetched} of ${cov.historyEligible}` : null,
+    cov ? `${cov.requestsUsed} of ${cov.requestLimit} API requests used` : synthetic ? '0 API requests (offline)' : null,
+  ].filter(Boolean).join(' · ')));
   root.append(el('p', { class: 'kv' }, el('b', {}, 'Freshness: '), s.freshness));
   // Crypto live scans: how far the history requests got, in plain English, from the scan's own figures.
   const coverage = data.market === 'crypto' ? coverageSentences(coverageFigures(r)) : [];
   if (coverage.length) root.append(el('p', { class: 'kv' }, el('b', {}, 'Coverage: '), coverage.join(' ')));
+  // Biggest move first (absolute short-period change; assets without one last). Display order only:
+  // scores, sections and filters are unchanged.
+  const move = (x) => (x.row.change.short.value === null ? -1 : Math.abs(x.row.change.short.value));
   const sectionView = (sec) => {
-    const body = sec.rows.length
+    const rows = [...sec.rows].sort((a, b) => move(b) - move(a));
+    const body = rows.length
       ? el('div', { class: 'table-wrap' }, el('table', {},
-        el('thead', {}, el('tr', {}, ...['Asset', 'Signal', 'Evidence', 'Unit price', 'Max whole units', 'Budget check', 'Change', 'Category', 'Volatility & data'].map((h) => el('th', {}, h)))),
-        el('tbody', {}, ...sec.rows.flatMap((x) => [rowView(x), newsPanelRow(x.row), wtbPanelRow(x.row)].filter(Boolean)))))
+        el('thead', {}, el('tr', {}, ...['Asset', 'Signal', 'Price', 'Change ↓', 'Your budget', 'Look closer'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, ...rows.flatMap((x) => [rowView(x), newsPanelRow(x.row), wtbPanelRow(x.row)].filter(Boolean)))))
       : el('p', { class: 'empty' }, s.status === 'partial' ? 'None among the assets evaluated in this partial scan.' : 'None.');
     return sec.collapsed
       ? el('details', { class: 'section' }, el('summary', {}, `${sec.title} (${sec.rows.length})`), body)
@@ -622,26 +631,29 @@ function render() {
     if (g.examples.length < 8) g.examples.push(e.symbol);
     groups.set(reason.code, g);
   }
-  root.append(el('h3', {}, `Excluded by the scanner (${r.excluded.length}; first reason shown)`));
+  // Reference material, folded: what was excluded and what the data cannot show.
+  const more = el('details', { class: 'section' }, el('summary', {}, `Scanner details: ${r.excluded.length} excluded, data limits`));
+  root.append(more);
+  more.append(el('h3', {}, `Excluded by the scanner (${r.excluded.length}; first reason shown)`));
   if (data.market === 'crypto' && r.excluded.length > 0) {
     // Three different reasons, never combined: skipped for the request limit, data problems, scope rules.
     const b = exclusionBreakdown(r.excluded);
     const skipped = coverage.length > 0 ? 'skipped when history requests stopped (see Coverage above), not rejected by any rule' : 'skipped because history requests stopped before reaching them (request or rate limit; not rejected by any rule)';
-    root.append(el('p', { class: 'kv' }, `Of these: ${b.budget_skipped} ${skipped}, ` +
+    more.append(el('p', { class: 'kv' }, `Of these: ${b.budget_skipped} ${skipped}, ` +
       `${b.data} not evaluated because of missing, stale, implausible or unreliable data or a failed request, ` +
       `and ${b.rule} outside the scanner's scope or eligibility rules.`));
   }
-  root.append(groups.size > 0
+  more.append(groups.size > 0
     ? el('ul', { class: 'excl' }, ...[...groups].sort((x, y) => y[1].count - x[1].count).map(([code, g]) =>
       el('li', {}, el('span', { class: 'count' }, String(g.count)), data.exclusionLabels?.[code] ?? code.replaceAll('_', ' '),
         el('div', { class: 'ex' }, `${g.examples.join(', ')}${g.count > g.examples.length ? `, +${g.count - g.examples.length} more` : ''}`))))
     : el('p', { class: 'empty' }, 'None.'));
-  root.append(el('h3', {}, 'What this data cannot show'));
-  root.append(el('ul', { class: 'notes' }, ...data.limitations.map((n) => el('li', {}, n))));
+  more.append(el('h3', {}, 'What this data cannot show'));
+  more.append(el('ul', { class: 'notes' }, ...data.limitations.map((n) => el('li', {}, n))));
   const notes = r.dataset.notes ?? [];
   if (notes.length > 0) {
-    root.append(el('h3', {}, 'Data notes'));
-    root.append(el('ul', { class: 'notes' }, ...notes.map((n) => el('li', {}, n))));
+    more.append(el('h3', {}, 'Data notes'));
+    more.append(el('ul', { class: 'notes' }, ...notes.map((n) => el('li', {}, n))));
   }
 }
 

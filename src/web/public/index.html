@@ -17,6 +17,22 @@
   </header>
 
   <main>
+    <section class="panel search-panel" aria-labelledby="search-title">
+      <h2 id="search-title">Find a crypto asset</h2>
+      <p class="muted">Search any coin CoinGecko lists by name or symbol, including coins the scanner did not select.
+        Searching never starts a scan. It uses the Data choice under Scan below: Offline searches invented test coins;
+        Live asks before each request (1 CoinGecko request per search or lookup; results are cached).</p>
+      <form id="search-form" class="search-form" role="search">
+        <label for="search-q" class="visually-hidden">Coin name or symbol</label>
+        <input id="search-q" type="search" maxlength="50" autocomplete="off" spellcheck="false" placeholder="Name or symbol, e.g. bitcoin or BTC">
+        <button id="search-btn" class="primary" type="submit">Search</button>
+      </form>
+      <div id="search-status" class="running" hidden role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span id="search-status-text">Searching…</span></div>
+      <div id="search-error" class="error" hidden role="alert"></div>
+      <div id="search-results"></div>
+      <div id="asset-detail"></div>
+    </section>
+
     <section class="panel" aria-labelledby="scan-title">
       <div class="panel-head">
         <div>
@@ -40,11 +56,6 @@
           <label><input type="radio" name="mode" value="offline" checked> Offline (synthetic test data, no API requests)</label>
           <label><input type="radio" name="mode" value="live"> Live (provider API)</label>
         </fieldset>
-        <label class="budget">
-          <span>Max API requests</span>
-          <input id="max-requests" type="number" min="1" step="1" value="5" inputmode="numeric" disabled>
-          <small id="budget-hint" class="muted">Live only. Retries count toward the limit.</small>
-        </label>
       </form>
 
       <form id="money" class="controls money">
@@ -66,12 +77,22 @@
           </select>
           <small class="muted">Filters apply to the last scan; changing them makes no API request.</small>
         </label>
+      </form>
+      <details class="settings">
+        <summary>Settings: API request limit, news per asset</summary>
+        <div class="controls">
+        <label class="budget">
+          <span>Max API requests</span>
+          <input id="max-requests" type="number" min="1" step="1" value="5" inputmode="numeric" disabled>
+          <small id="budget-hint" class="muted">Live only. Retries count toward the limit.</small>
+        </label>
         <label class="budget">
           <span>News articles per asset</span>
           <input id="news-limit" type="number" min="1" max="20" step="1" value="5" inputmode="numeric">
           <small class="muted">News loads only when you open an asset's panel.</small>
         </label>
-      </form>
+        </div>
+      </details>
       <p class="muted small">Whole units only, before fees. A low unit price is not a sign of good value. This tool cannot buy anything; it shows what a budget could cover.</p>
 
       <div id="live-warning" class="warning" hidden>
@@ -88,21 +109,6 @@
       <div id="results" hidden></div>
     </section>
 
-    <section class="panel search-panel" aria-labelledby="search-title">
-      <h2 id="search-title">Find a crypto asset</h2>
-      <p class="muted">Search any coin CoinGecko lists by name or symbol, including coins the scanner did not select.
-        Searching never starts a scan. It uses the Data choice above: Offline searches invented test coins;
-        Live asks before each request (1 CoinGecko request per search or lookup; results are cached).</p>
-      <form id="search-form" class="search-form" role="search">
-        <label for="search-q" class="visually-hidden">Coin name or symbol</label>
-        <input id="search-q" type="search" maxlength="50" autocomplete="off" spellcheck="false" placeholder="Name or symbol, e.g. bitcoin or BTC">
-        <button id="search-btn" class="primary" type="submit">Search</button>
-      </form>
-      <div id="search-status" class="running" hidden role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span id="search-status-text">Searching…</span></div>
-      <div id="search-error" class="error" hidden role="alert"></div>
-      <div id="search-results"></div>
-      <div id="asset-detail"></div>
-    </section>
 
     <p class="footnote">Scores measure the strength of observed evidence, not expected returns. No price targets.
       Catalysts are not verified. Categories are labels with stated evidence, not proof of legitimacy or safety.

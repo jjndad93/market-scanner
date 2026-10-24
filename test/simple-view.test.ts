@@ -44,11 +44,12 @@ test('cross-check sentences: identity is not agreement; missing values are "coul
     'The two data sources disagree: price differs by 20.0%. The market cap could not be compared (missing on one side).');
 });
 
-test('page: the original layout; each lead shows the scan\'s own explanation in place; no new collapsing, filtering or limits', () => {
+test('page: each lead shows the scan\'s own explanation in place; exact evidence folds; no filtering or limits', () => {
   const app = readFileSync(new URL('../src/web/public/app.js', import.meta.url), 'utf8');
   assert.match(app, /import \{ coverageFigures, coverageSentences, dashboardWording, exclusionBreakdown, leadCrossCheckWarnings, plainCheck \} from '\/simple-view\.js';/);
-  // The original structure is intact: every tier section open, every lead listed, every cross-check card shown.
-  assert.match(app, /box\.append\(el\('details', \{ class: 'section', open: '' \},/);
+  // Compact layout: the high-priority tier starts open, the others fold; every lead is still listed and
+  // every cross-check card shown.
+  assert.match(app, /box\.append\(el\('details', \{ class: 'section', open: key === 'highPriority' \? '' : null \},/);
   assert.match(app, /list\.length \? el\('ul', \{ class: 'leads' \}, \.\.\.list\.map\(discoveryEntry\)\)/);
   assert.match(app, /box\.append\(el\('ul', \{ class: 'leads' \}, \.\.\.d\.results\.map\(\(x\) => cmcLead\(x, d\.attribution\)\)\)\);/);
   // In place, after each lead's name line and before its exact evidence: reason, every warning in order, or
@@ -56,7 +57,7 @@ test('page: the original layout; each lead shows the scan\'s own explanation in 
   const entry = app.slice(app.indexOf('function discoveryEntry(e)'), app.indexOf('function discoveryView('));
   assert.match(entry, /const x = e\.explanation;/);
   assert.match(entry, /const second = leadCrossCheckWarnings\(e, state\.cmc\?\.data, state\.last\?\.result\?\.evaluatedAt\);/);
-  assert.match(entry, /x \? el\('p', \{ class: 'plain' \}, x\.reason\) : null,\n    x && x\.warnings\.length \? el\('ul', \{ class: 'plain-warnings' \}, \.\.\.x\.warnings\.map\(\(w\) => el\('li', \{ class: 'plain-caution' \}, `Caution: \$\{w\.text\}`\)\)\) : null,\n    x && x\.nextStep \? el\('p', \{ class: 'plain-next' \}, x\.nextStep\) : null,\n    second\.length \? el\('ul', \{ class: 'plain-warnings' \}, \.\.\.second\.map\(\(w\) => el\('li', \{ class: 'plain-caution' \}, `Second source: \$\{w\.text\}`\)\)\) : null,\n    el\('ul', \{ class: 'notes' \}, \.\.\.e\.reasons/);
+  assert.match(entry, /x \? el\('p', \{ class: 'plain' \}, x\.reason\) : null,\n    x && x\.warnings\.length \? el\('ul', \{ class: 'plain-warnings' \}, \.\.\.x\.warnings\.map\(\(w\) => el\('li', \{ class: 'plain-caution' \}, `Caution: \$\{w\.text\}`\)\)\) : null,\n    x && x\.nextStep \? el\('p', \{ class: 'plain-next' \}, x\.nextStep\) : null,\n    second\.length \? el\('ul', \{ class: 'plain-warnings' \}, \.\.\.second\.map\(\(w\) => el\('li', \{ class: 'plain-caution' \}, `Second source: \$\{w\.text\}`\)\)\) : null,\n    el\('details', \{\}, el\('summary', \{\}, 'Evidence'\),\n      el\('ul', \{ class: 'notes' \}, \.\.\.e\.reasons/);
   assert.doesNotMatch(app, /whyText|cautionText/); // the page shows the scan's wording; it keeps no copy of its own
   assert.match(app, /el\('p', \{ class: 'plain' \}, plainCheck\(x\)\.text\),\n    el\('div', \{ class: 'sym' \}, MATCH_TEXT\[x\.match\.status\]\(x\.match\)\),/);
   assert.doesNotMatch(app, /keptDetails|toggleButton|showAllLeads|cmcShowAll|TOP_LEADS|researchSummary|crossCheckItems|summaryTile/);

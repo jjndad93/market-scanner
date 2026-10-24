@@ -24,9 +24,10 @@ test('crypto order: qualified signals within budget, then research leads (with t
   const leads = render.indexOf('if (r.discovery) root.append(discoveryView(r.discovery, coverage.length > 0));');
   const rest = render.indexOf('if (view) for (const sec of crypto ? view.sections.slice(1) : view.sections) root.append(sectionView(sec));');
   assert.ok(first > 0 && leads > first && rest > leads, 'qualified section, then research leads, then the remaining sections');
-  // The CoinMarketCap check stays at the end of the research-leads section; tiers keep their order and stay open.
+  // The CoinMarketCap check stays at the end of the research-leads section; tiers keep their order.
+  // Compact layout: only the high-priority tier starts open; the others open on click.
   assert.match(discoveryView, /for \(const key of \['highPriority', 'watchlist', 'insufficientData'\]\)/);
-  assert.match(discoveryView, /box\.append\(el\('details', \{ class: 'section', open: '' \},/);
+  assert.match(discoveryView, /box\.append\(el\('details', \{ class: 'section', open: key === 'highPriority' \? '' : null \},/);
   assert.ok(discoveryView.indexOf('box.append(cmcView());') > discoveryView.indexOf("for (const key of ['highPriority'"));
   // Stocks have no research leads, and every section renders in its original order (crypto ? … : view.sections).
   assert.match(render, /const crypto = data\.market === 'crypto';/);

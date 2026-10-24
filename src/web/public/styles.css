@@ -173,3 +173,12 @@ p.warning { display: block; }
 .news-panel h5 { margin: 12px 0 6px; }
 .wtb-table td { vertical-align: top; }
 .wtb-table .chip { margin-top: 4px; display: inline-block; }
+
+/* Compact layout */
+.summary-line { margin: 14px 0 6px; padding: 10px 14px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+.row-actions { min-width: 230px; }
+.action-line { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.row-actions details { margin-top: 4px; }
+.row-actions .more { display: grid; gap: 8px; margin-top: 6px; white-space: normal; }
+details.settings { margin-top: 12px; }
+details.settings > .controls { margin-top: 8px; }
