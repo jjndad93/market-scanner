@@ -39,6 +39,350 @@ node src/cli.ts option --file examples/hypothetical-contract.txt --live-context 
 node src/cli.ts scan options --live --symbols AAPL --max-requests 1   # LIVE: paid options plan only
 ```
 
+### Web dashboard (crypto and US stocks)
+
+```powershell
+npm run web                     # then open http://127.0.0.1:4173 in your browser; Ctrl+C stops it
+npm run web -- --port 4174      # another port, if 4173 is busy
+```
+
+**Using it.** Choose the market (**Cryptocurrency** or **US stocks**) and **Offline** (the
+synthetic fixture; no API requests) or **Live** (CoinGecko or Massive), then click **Scan**. The page shows:
+
+- COMPLETE or PARTIAL status, the next step, and the counts
+- history coverage and the API requests used (crypto)
+- freshness
+- every asset the scanner evaluated, in the scanner's own order (qualified first, by rank)
+- for each: signal and evidence score, volume multiple, short and long change, unit price with
+  its time and basis, and risk measures
+- the reasons behind each score ("Why")
+- exclusions, grouped by first reason, what the data cannot show, and the data notes
+
+**Budget filters.** These are three separate controls:
+
+- **Total budget (USD)**
+- **Maximum unit price** (or "No unit-price limit")
+- **Show:** affordable assets, stronger signals, or both
+
+Changing them re-filters the last result in the browser. They make no API request.
+
+For each asset the page shows:
+
+- the maximum whole units, `floor(budget ÷ unit price)`
+- the approximate cost, before fees
+- whether it passes the budget check and the unit-price check, with the reason if not
+
+Whole units only: fractional shares or coins are not assumed. The filters never change a score or
+the order, and are never sorted by price. Qualified signals outside your limits stay listed in a
+collapsed section. A low unit price is not a sign of value. Nothing here means an asset can be
+bought through this tool, which has no brokerage connection.
+
+**Crypto category (label only).** Each evaluated coin gets one label:
+
+- Established
+- Stablecoin
+- Wrapped/staked
+- Unknown
+
+Each label shows its basis and every piece of evidence found:
+
+| Basis | Evidence |
+|---|---|
+| **Curated list** (decides first) | The project's existing stablecoin and wrapped/staked ids, symbols and tags |
+| **Heuristic** | The existing pegged-price pattern, or a CoinGecko market-cap rank of 20 or better ("established" means large, not legitimate or safe) |
+| **None** | Contradictory evidence at the deciding level, or no evidence at all, gives **Unknown** |
+
+A name such as "Wrapped …" is recorded but never used on its own.
+
+**Meme coin** and **Other project/utility** are never assigned: CoinGecko's market list has no
+category field. The smallest way to add meme coins:
+
+1. Verify the meme category id once with `/coins/categories/list`.
+2. Add one opt-in `/coins/markets?category=<id>` request per scan.
+
+The labels do not change the existing stablecoin and wrapped/staked exclusion filters.
+
+**Crypto volatility** comes from the same market-list response, so it costs no extra request.
+The period is CoinGecko's rolling 24 hours at the coin's last update.
+
+| Measure | Formula or source | Flagged when |
+|---|---|---|
+| 24h range | `(high_24h − low_24h) / low_24h × 100` | ≥ 30% |
+| Drop from the 24h high | `(price − high_24h) / high_24h × 100` | ≤ −20% |
+| Drawdown from the all-time high | Provider figure, with the ATH date | ≤ −90% |
+| Turnover | 24h volume as a % of market cap | — |
+| Volume-baseline variability | Q3/Q1 of the baseline volumes | Highly variable |
+| Data age | Minutes since the coin's last update | — |
+
+The flag thresholds are informational heuristics.
+
+If the price lies outside the provider's own 24h low–high (snapshots taken at different times), the
+range is not computed and the reason is shown. Not available: an intraday price series, the bid/ask
+spread, and, for stocks, the intraday range (the end-of-day bars carry a high and low, but they are
+not parsed yet).
+
+**Re-run** repeats the last scan. Synthetic results carry a TEST DATA banner.
+
+**Market movement & news.** Each evaluated asset has a **News & why it may be moving** button.
+Nothing is fetched until you click it. The panel opens under the asset's row, without leaving the
+results, and shows:
+
+- **The move:**
+  - the short and long change and the volume multiple
+  - the intraday measures the data supports (crypto: 24h range and drop from the 24h high;
+    stocks: none, because the bars are end of day)
+  - the data's time and source
+- **Why it may be moving:** one of these verdicts:
+
+  | Verdict | When |
+  |---|---|
+  | Possible catalyst | An article tagged with the asset, focused on it (named in the headline, or the only ticker), and published **before or during** the move |
+  | Conflicting reports | The articles around the move disagree, or all point against it, by the provider's automated sentiment |
+  | Unconfirmed | Related articles exist, but none qualifies |
+  | No relevant news found | No article is tagged with the asset |
+
+  Every verdict other than "Possible catalyst" says the reason is unknown. Even "Possible
+  catalyst" is a timing-and-topic link, never confirmed causation.
+
+  The move window is:
+  - **stocks:** the latest session, previous close to latest close (4 pm ET)
+  - **crypto:** the rolling 24 hours to the last update
+- **Article cards:** each card shows:
+  - the headline, publisher and publication time
+  - the publisher's or provider's description (not verified, and not written by this tool)
+  - what the provider reports (the reported fact)
+  - why the article may or may not be relevant
+  - an evidence label: possible catalyst (moderate or weak), published after the move,
+    background only, or time unknown
+  - a **View original article** link, which opens in a new tab without a referrer
+
+  An article published **after** the move is labelled as such and is never treated as its cause.
+  One with no valid publication time is never a catalyst. Articles not tagged with the asset are
+  dropped, never shown. Among duplicates the earliest copy is kept.
+
+**Stock news source.** [Massive ticker news](https://massive.com/docs/rest/stocks/news)
+(`/v2/reference/news`). Its docs list it in every Stocks plan, including the free Basic plan,
+updated hourly. It uses the existing `POLYGON_API_KEY`; no new key is needed.
+
+- **Offline scans** use a synthetic news fixture (`test/fixtures/stock-news.synthetic.json`,
+  labelled TEST DATA, example.com links) and make **no requests**.
+- **After a live stock scan,** opening a panel asks for confirmation, then sends **exactly one**
+  request (newest articles for that ticker from the last 60 days).
+- **Caching:** the result is kept in memory for 60 minutes. Re-opening the panel within that time
+  costs nothing. **Refresh news** bypasses the cache and asks again.
+- **Articles per asset:** set in the page, 1 to 20 (default 5).
+- **Request spacing:** live news requests are at least 12.5 s apart, to stay under the free plan's
+  5 calls per minute, which stock scans share.
+- **Never in parallel:** news and scans never run at the same time.
+- **Errors:** 401, 403, 429, timeouts, server errors and malformed responses become short messages,
+  with the key never included. A failed refresh keeps showing the earlier result, marked as such.
+- **Untrusted content:** article fields are treated as untrusted data. Control characters are
+  removed, fields are length-capped and inserted as text only, and only plain http(s) links are
+  kept.
+
+**Crypto news: not available.** No crypto news source is configured:
+
+- CoinGecko's `/news` endpoint needs a paid plan (Analyst or higher).
+- The other documented crypto news APIs (CryptoPanic, CoinDesk Data) need a new key and a paid
+  plan.
+
+Adding one needs approval. Until then a crypto panel shows the move and says the reason is unknown.
+
+**News limitations.**
+
+- The tool reads only headlines and descriptions, never full articles, so it cannot confirm what
+  an article says beyond them.
+- Matching relies on the provider's ticker tags.
+- Sentiment is the provider's AI-generated label.
+- Coverage is whatever Massive aggregates. It is updated hourly, so very recent news may be
+  missing.
+
+**Plain-English explanations.** Each research lead and each CoinMarketCap cross-check result starts
+with plain English, followed by the scanner's exact evidence, unchanged:
+
+- each lead gets one sentence on why it appeared, such as "Trading activity is unusually high (about
+  3.5× its usual level), but the price has barely moved.", then every warning that applies, in a
+  fixed priority order, or a next step when there is none:
+  1. data quality (stale, missing, implausible, not checked against its own history, an unsteady
+     baseline)
+  2. volatility (the existing flags: far below its 24-hour high, a 24-hour swing of 30% or more,
+     90% or more below its all-time high, an extreme trading spike)
+  3. weaker evidence
+- these come from the scan itself (`src/scanner/lead-quality.ts`): `scan crypto --json` includes
+  them as `explanation` on each research lead, and the dashboard shows the same text. The CLI text
+  report is unchanged.
+- each cross-check result gets one sentence, such as "The two data sources disagree: price differs
+  by 5.2%."
+
+The layout is otherwise unchanged. These are research priorities, not buy or sell recommendations.
+
+**Research leads (crypto discovery).** Crypto results open with a **Research leads** section.
+It surfaces assets beyond the shortlist of up to 5 movers and 3 watchlist entries, using only data
+the scan already has. Every lead says why it was surfaced (its evidence, with values) and what
+limits that evidence.
+
+| Tier | Meaning |
+|---|---|
+| **High priority** | A qualified **mover**: a large 24h move **and** unusual volume against its own 30-day baseline. The baseline must be measured and stable (Q3/Q1 below 4×), with no extreme spike (10× or more). Several signals agree. |
+| **Watchlist** | Noteworthy, but weaker or incomplete evidence. One of: a qualified volume-only candidate; a mover with a variable or unmeasured baseline or an extreme spike; a pattern below the evidence threshold; or an evaluated asset with a large 24h or 7-day move but normal volume for itself. |
+| **Insufficient data** | The snapshot shows activity, but the asset could not be evaluated responsibly: history not requested (request limit) or failed, too few or unreliable baseline days, stale or missing data, or values beyond the plausibility limits. |
+
+Activity signals come from the market snapshot alone:
+
+- a 24h move of at least 8% (the mover threshold)
+- 24h volume of at least 15% of market cap
+- a 7-day move of at least 20%
+
+They are never scored. Tiers never change scores, ranks or display limits.
+
+Leads that are not listed:
+
+- assets excluded by scope rules (stablecoins, wrapped or staked tokens, size or volume minimums);
+  these are counted in the notes
+- high turnover alone, when the asset's volume is normal for itself
+
+**Smarter use of the request limit (live).** Histories used to be requested in market-cap order,
+so a small `--max-requests` evaluated only the largest coins. Now assets showing snapshot activity
+are requested first, then the rest in market-cap order. The number of requests, the limit, the
+cache and the retry rules are unchanged, and the live notes say how many were prioritized. With
+enough requests the same histories are fetched as before.
+
+**Coverage.** The scan still covers one `/coins/markets` page: CoinGecko's top 250 by market cap.
+Coins outside it are not scanned; use **Find a crypto asset** to look one up. Incomplete scans
+(request limit, failures) are reported in the leads' notes.
+
+The CLI text report is unchanged; `--json` output gains a `discovery` key.
+
+**Second source: CoinMarketCap (Stage A).** Under the research leads, **Cross-check leads with
+CoinMarketCap** compares each lead with CoinMarketCap (CMC). It runs only when you click it and
+never changes the scan, its scores, tiers or filters. It follows the last crypto scan's mode:
+
+- **Offline** uses a synthetic listings fixture (`test/fixtures/cmc-listings.synthetic.json`,
+  TEST DATA) and makes no requests.
+- **Live** sends **one** request, `/v3/cryptocurrency/listings/latest`, for the top 500 coins by
+  CMC rank with `cmc_rank` and `tags` (about 2 credits), after you confirm.
+
+For each lead the panel shows:
+
+- **Matching**, which is conservative because symbols are not unique on either provider. A lead is
+  matched only when a CMC coin has the same symbol **and** the same name (case and punctuation
+  ignored), or a CMC slug equal to the CoinGecko id. A symbol alone never matches. Otherwise the
+  lead is labelled:
+  - **ambiguous:** several CMC coins share the symbol and name
+  - **not matched:** the symbol is used under a different name
+  - **not found:** not in CMC's top 500
+- **Price and market cap:** compared within 2% and 10%, with timing gaps over 30 minutes noted.
+  24h volume is not compared, because CMC reports "adjusted" volume, a different method.
+- **CMC's tags**, as provider evidence. A `memes` or `stablecoin` tag also gives a category label.
+- **On the research lead itself:** once you have run the cross-check, each lead also shows that
+  check's warnings, labelled "Second source:". They are:
+  - different prices
+  - different market values
+  - could not be matched confidently
+  - not listed in CMC's top 500
+  - data missing, so the values could not be compared
+  - snapshots too far apart in time
+
+  The server decides each warning from the same verdicts and tolerances. The page finds a lead's
+  result by its unique CoinGecko id, never by symbol, and only for the scan on screen. Values that
+  agree add no warning. Before a cross-check, or after a new scan, leads say nothing about a second
+  source.
+  These tag names are assumed from CMC's site and must be confirmed on the first live response.
+
+Requirements and how this tool meets them (from CMC's official docs and Commercial API Terms,
+read 2026-10-22):
+
+- **Key handling:** the key is read **only** from the `COINMARKETCAP_API_KEY` environment
+  variable, on the server.
+  - Set it once as a Windows user environment variable (Start > "Edit environment variables for
+    your account"), then restart the terminal and the dashboard. Never put it in a file in this
+    folder.
+  - It is sent only in the `X-CMC_PRO_API_KEY` header. It is never put in a URL or logged, and it
+    is redacted from every response and error.
+  - The page sees only "key configured: yes/no".
+- **Plan limits (free Basic):** 15,000 credits a month, 50 requests a minute, 1 key.
+  - Listings cost 1 credit per 250 coins returned, so this check costs about 2 credits.
+  - The panel shows the credit count CMC reports. Each dashboard session allows at most 20
+    cross-check requests, one at a time, never during a scan.
+- **Stopping:** some errors stop all CMC requests until the dashboard restarts, so no further
+  credits are spent:
+  - a rejected key (401)
+  - payment (402)
+  - a plan or access problem (403, including error 1006, "plan does not include this endpoint")
+  - a daily or monthly credit limit (429, errors 1009 and 1010)
+  - any other 429 without an error code
+
+  The per-minute limit (errors 1008 and 1011) pauses requests for 60 s. Timeouts and server errors
+  are reported without stopping. Nothing is retried.
+- **Attribution:** "Data provided by CoinMarketCap.com", with a link to coinmarketcap.com. It is
+  shown prominently above the cross-check results and on every matched lead.
+- **Temporary storage:** the terms allow storing content only temporarily, as needed to show it.
+  - The parsed listing subset is kept **in memory only**, for 10 minutes.
+  - It is dropped when it expires or the dashboard stops, and nothing is written to disk.
+  - **Run the cross-check again** asks before sending a new request.
+- **Licence:** the free plan's licence covers one product used by end users for personal,
+  non-commercial purposes. It forbids redistributing the data on its own.
+
+Not in Stage A:
+
+- historical-volume baselines from CMC
+- any CMC use in the CLI
+- CMC trending or gainers endpoints (whether the free plan includes them is not documented)
+
+**Find a crypto asset.** The search box under the scan panel finds any coin CoinGecko lists, by
+name or symbol, including coins the scanner did not select. Searching is separate from scans:
+it never starts one and never changes scan results or the budget filters.
+
+- **When it runs:** only when you press **Search** or Enter, never while you type.
+- **Offline / Live:** it follows the page's **Data** choice.
+  - **Offline** searches a small fixture of invented coins (`test/fixtures/crypto-search.synthetic.json`,
+    labelled TEST DATA) and makes no requests.
+  - **Live** asks before each request, then sends exactly one:
+    - a search uses CoinGecko `/search`, which covers all listed coins, sorted by market cap
+    - a lookup uses `/coins/markets?ids=<id>`, the same market fields and validation as the scan
+- **Results:** each shows the name, symbol, CoinGecko id, market-cap rank and how it matched.
+  Exact symbol, name or id matches come first, then the rest in market-cap order; at most 25 are
+  shown.
+- **Ambiguous symbols:** symbols are not unique on CoinGecko. When several coins share a symbol,
+  all are listed and flagged, and none is chosen for you. You pick one by name and id, and the
+  lookup uses that unique id.
+- **The selected coin:** shows its price, 24h and 7d change, 24h volume, market cap, 24h range
+  and rank, plus when CoinGecko last updated it, the source and when it was fetched.
+  - Values the provider does not supply are shown as not available.
+  - A coin with no market data says so.
+  - It also says whether the latest scan evaluated the coin (and how), or that it was not among
+    the evaluated assets.
+- **Request protections (live):**
+  - the key stays on the server
+  - each request uses the existing client with a 1-request budget, and a rate limit fails at once
+    instead of waiting to retry
+  - searches are cached for 15 minutes and lookups for 5; **Refresh** asks again
+  - live requests are at least 2 s apart (the Demo plan allows 30 a minute)
+  - one request runs at a time, and never during a scan (scans also wait for it)
+  - each dashboard session allows at most 100 live search requests
+  - errors (no key, 401, 403, 429, timeouts, outages, malformed responses) become short messages,
+    with the key never included
+- **Limitations:**
+  - CoinGecko decides what `/search` returns and how it orders it.
+  - Coins without a market-cap rank or market data can still appear in results.
+  - Search covers crypto only.
+
+**Safety.**
+
+- **Live scans need you:** they run only when you pick Live and confirm the browser prompt.
+- **Request limit:** set it in the page (default 5). The server checks it (a whole number from
+  1 to 160), and the existing request client enforces it, retries included.
+- **Same engine as the CLI:** scans run inside the server through the same command code as the
+  CLI, with a fixed argument list and no shell. So the key check, cache, authentication stops
+  and partial-scan reporting are identical.
+- **Local only:** the server listens on 127.0.0.1 only. It refuses other Host headers, and it
+  accepts scan requests only from its own page.
+- **One scan at a time.**
+- **Keys stay on the server:** only "key configured: yes/no" reaches the browser, and nothing
+  runs on a schedule.
+- **Limits:** no stop button. A running live scan is bounded by the
+  request limit and the 15-second per-request timeout.
+
 ### Daily workflow (Windows PowerShell)
 
 A routine for each morning. Steps 1-4 are offline and free; only step 5 spends API requests,
@@ -516,7 +860,17 @@ src/options/              parse -> evaluate -> render for the option command
   blackScholes.ts         pricing, Greeks, implied-volatility solver
   payoff.ts               breakeven, max loss, expiration scenarios
   evaluate.ts             checks, verdict, explanations (thresholds in THRESHOLDS)
-src/scanner/              crypto scanner: types, rules, normalize, analyze, render; command (scan CLI)
+src/scanner/              crypto scanner: types, rules, normalize, analyze, render; command (scan CLI);
+                          insights.ts (dashboard category labels and volatility measures)
+src/web/                  local dashboard: server.ts, rows.ts (dashboard rows), news.ts (news
+                          panel service), public/ (page, app.js, budget.js shared with the tests)
+src/news/assess.ts        news-to-move assessment ("why it may be moving"); no network
+src/providers/massive-news.ts  Massive ticker-news adapter (validation, cleaning)
+src/providers/coingecko-search.ts  CoinGecko /search and single-coin /coins/markets adapter
+src/web/crypto-search.ts  dashboard crypto search service (offline fixture, live guards, caches)
+src/providers/coinmarketcap.ts  CoinMarketCap listings adapter (validation, error codes, stop rules)
+src/scanner/cross-check.ts  conservative CoinGecko-to-CMC matching and value comparison (no network)
+src/web/cmc-check.ts      dashboard CMC cross-check service (offline fixture, confirmation, memory-only cache)
 src/stocks/               US-stock scanner: types, rules (incl. universe), normalize, analyze, render, command
 src/providers/            http.ts (fetch client: timeout, budget, 429 retry); coingecko.ts, massive.ts
                           (adapters); history-cache.ts (S6 crypto history cache)
@@ -555,3 +909,14 @@ dividend dates are not fetched. This path has not been run against live data yet
   variables), never from a file in this OneDrive-synced folder; the tool does not read `.env`.
 - Never invents prices, Greeks, volume or IV. Missing inputs are reported as missing.
 - Test and example data is always labelled as hypothetical.
+
+## Where to buy (dashboard)
+
+Each row in the dashboard has a **Where to buy** button next to **News**.
+
+- **Crypto, live scan:** one CoinGecko request (`/coins/{id}/tickers`, uses `COINGECKO_DEMO_API_KEY`), asked for with a confirmation and cached for an hour. Exchanges are grouped and sorted with US-friendly ones first, then by 24h volume. Decentralized exchanges are listed separately, with the contract address they trade, plus a link to confirm it on CoinGecko. Markets CoinGecko flags as stale or anomalous are skipped.
+- **Crypto, offline scan:** an invented fixture (`test/fixtures/crypto-tickers.synthetic.json`), labeled TEST DATA. No requests.
+- **Stocks:** no request. Every stock in the scan list is a large NYSE/Nasdaq listing that any US broker can buy.
+- The "US access" label comes from a fixed list in `src/web/where-to-buy.ts` (`US_ACCESS`), not from the provider. Edit it when an exchange changes its policy.
+
+The default maximum unit price on the dashboard is now $50.

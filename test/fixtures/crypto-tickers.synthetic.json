@@ -1,0 +1,12 @@
+{
+  "_comment": "TEST DATA. Invented exchanges and volumes in the shape of CoinGecko /coins/{id}/tickers. Used for every coin in offline mode. Not real listings.",
+  "name": "Synthetic",
+  "tickers": [
+    { "base": "SYN", "target": "USD", "market": { "name": "Example US Exchange", "identifier": "example_us" }, "converted_volume": { "usd": 2400000 }, "trust_score": "green", "trade_url": "https://example.com/trade/SYN-USD", "is_anomaly": false, "is_stale": false },
+    { "base": "SYN", "target": "USDT", "market": { "name": "Example Global Exchange", "identifier": "example_global" }, "converted_volume": { "usd": 9100000 }, "trust_score": "green", "trade_url": "https://example.com/spot/SYN_USDT", "is_anomaly": false, "is_stale": false },
+    { "base": "SYN", "target": "BTC", "market": { "name": "Example Global Exchange", "identifier": "example_global" }, "converted_volume": { "usd": 300000 }, "trust_score": "yellow", "trade_url": null, "is_anomaly": false, "is_stale": false },
+    { "base": "SYN", "target": "USDT", "market": { "name": "Example Small Exchange", "identifier": "example_small" }, "converted_volume": { "usd": 85000 }, "trust_score": "red", "trade_url": "javascript:alert(1)", "is_anomaly": false, "is_stale": false },
+    { "base": "SYN", "target": "USDT", "market": { "name": "Example Stale Exchange", "identifier": "example_stale" }, "converted_volume": { "usd": 50000000 }, "trust_score": "green", "is_anomaly": false, "is_stale": true },
+    { "base": "0x1111111111111111111111111111111111111111", "target": "0x2222222222222222222222222222222222222222", "market": { "name": "ExampleSwap (Test Chain)", "identifier": "exampleswap_test" }, "converted_volume": { "usd": 1200000 }, "trust_score": "green", "trade_url": "https://example.com/swap", "is_anomaly": false, "is_stale": false }
+  ]
+}
