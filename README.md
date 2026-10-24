@@ -920,3 +920,19 @@ Each row in the dashboard has a **Where to buy** button next to **News**.
 - The "US access" label comes from a fixed list in `src/web/where-to-buy.ts` (`US_ACCESS`), not from the provider. Edit it when an exchange changes its policy.
 
 The default maximum unit price on the dashboard is now $50.
+
+## Market-wide stock movers (`--movers`)
+
+`node src/cli.ts scan stocks --live --movers` (and every live stock scan in the dashboard) no longer looks only at the fixed list of 20 large stocks. It reads Massive's **Daily Market Summary** (`/v2/aggs/grouped/locale/us/market/stocks/{date}`, included in the free Stocks Basic plan), which returns every US stock's end-of-day bar in one request:
+
+1. Two requests (three around a holiday) fetch the two latest sessions, starting from yesterday in New York, because Basic makes a session available after midnight ET. Weekends are skipped without a request.
+2. Stocks priced **$5-$50** with at least **$20M** traded in the latest session, and with a plain 1-5 letter ticker (no OTC, warrants or units), are ranked by their close-to-close change.
+3. The **15 biggest gainers** get the usual per-ticker history and scoring (20-session volume baseline, mover and watchlist rules).
+
+The limits are in `MARKET_MOVERS` in `src/providers/massive.ts`. A run uses about 17 requests at the free plan's pace (12.5 s apart), so 3-4 minutes. If two sessions cannot be found, the scan falls back to the fixed list and says so in its notes.
+
+## Dashboard conveniences
+
+- **Remembered settings:** Max API requests, budget, unit-price limit, Show and Direction are remembered in this browser.
+- **Morning auto-scan** (Settings): when ticked, a live crypto scan runs when the dashboard opens, at most once every 30 minutes. `install-morning-scan.cmd` opens the dashboard every day at a time you choose (Windows Task Scheduler); `remove-morning-scan.cmd` undoes it.
+- **Save to Snapshot Log** (each row) and **Send these to Snapshot Log** (top 10 of the main table) open the Asset Snapshot Log on claude.ai with the numbers in the link's #fragment, which browsers never send to a server. Nothing is saved until you click Save there. Its pages also open in the Claude phone app, so this is how scan results reach your phone without exposing this computer to the network.

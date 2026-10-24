@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { MASSIVE_STOCKS_INFO, nextStepFor } from '../core/errors.ts';
 import { createHttpClient } from '../providers/http.ts';
-import { MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER, fetchStockDataset } from '../providers/massive.ts';
+import { MARKET_MOVERS, MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER, MASSIVE_MIN_INTERVAL_MS, MOVERS_SOURCE, fetchMarketMovers, fetchStockDataset } from '../providers/massive.ts';
 import type { ScanCommandDeps } from '../scanner/command.ts';
 import { MISSING_KEY_NEXT_STEP, parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
 import { runStockScan } from './analyze.ts';
@@ -20,6 +20,9 @@ Flags:
   --live              fetch live data (explicit opt-in). Needs the ${MASSIVE_KEY_ENV}
                       environment variable; one request per ticker (${STOCK_UNIVERSE.length} tickers),
                       about 12.5 s apart (free plan: 5 calls/minute)
+  --movers            live only: instead of the fixed list, scan the biggest gainers of the
+                      previous session across ALL US stocks priced $${MARKET_MOVERS.minPrice}-$${MARKET_MOVERS.maxPrice} with at least
+                      $${MARKET_MOVERS.minDollarVolume / 1e6}M traded (2-3 market-summary requests, then one per gainer; up to ${MARKET_MOVERS.count})
   --json              print the structured scan result as JSON
   --now <ISO time>    fixture mode only: evaluate as of this time (default: the fixture's snapshot time)
   --max-requests <n>  live only: request cap for this run, retries included (default ${STOCK_UNIVERSE.length})
@@ -33,11 +36,11 @@ export const BUNDLED_STOCK_FIXTURE = new URL('../../test/fixtures/stock-scan.syn
 
 /** Runs `scan stocks ...`. Returns the process exit code. */
 export async function runStockScanCommand(args: string[], deps: ScanCommandDeps): Promise<number> {
-  let values: { fixture?: string; live?: boolean; json?: boolean; now?: string; 'max-requests'?: string };
+  let values: { fixture?: string; live?: boolean; json?: boolean; now?: string; 'max-requests'?: string; movers?: boolean };
   try {
     ({ values } = parseArgs({
       args,
-      options: { fixture: { type: 'string' }, live: { type: 'boolean', default: false }, json: { type: 'boolean', default: false }, now: { type: 'string' }, 'max-requests': { type: 'string' }, help: { type: 'boolean', short: 'h', default: false } },
+      options: { fixture: { type: 'string' }, live: { type: 'boolean', default: false }, movers: { type: 'boolean', default: false }, json: { type: 'boolean', default: false }, now: { type: 'string' }, 'max-requests': { type: 'string' }, help: { type: 'boolean', short: 'h', default: false } },
       strict: true,
     }));
   } catch (e) {
@@ -56,11 +59,16 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
     deps.err('--now is only for fixture scans; a live scan must use the current time so freshness checks are honest.');
     return 1;
   }
+  if (!values.live && values.movers) {
+    deps.err('--movers is only for live scans (--live).');
+    return 1;
+  }
   if (!values.live && values['max-requests'] !== undefined) {
     deps.err('--max-requests is only for live scans (--live).');
     return 1;
   }
-  let maxRequests = STOCK_UNIVERSE.length;
+  // Movers: 2 market-summary requests (3 around a holiday) plus one per gainer.
+  let maxRequests = values.movers ? MARKET_MOVERS.count + 3 : STOCK_UNIVERSE.length;
   if (values['max-requests'] !== undefined) {
     const parsed = parseMaxRequests(values['max-requests']);
     if (parsed === null) {
@@ -87,7 +95,20 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
       const client = createHttpClient({
         fetch: deps.fetch, baseUrl: MASSIVE_BASE_URL, apiKeyHeader: MASSIVE_KEY_HEADER, apiKey: `Bearer ${key}`, maxCalls: maxRequests, sleep: deps.sleep,
       });
-      const data = await fetchStockDataset({ client, clock: deps.clock, universe: STOCK_UNIVERSE, maxCalls: maxRequests, sleep: deps.sleep });
+      if (!values.movers) {
+        const data = await fetchStockDataset({ client, clock: deps.clock, universe: STOCK_UNIVERSE, maxCalls: maxRequests, sleep: deps.sleep });
+        return emit(data, deps.clock());
+      }
+      const movers = await fetchMarketMovers({ client, clock: deps.clock, maxCalls: maxRequests, sleep: deps.sleep });
+      const useMovers = movers.tickers.length > 0;
+      if (movers.requestsUsed > 0 && client.callsMade < maxRequests) await (deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(MASSIVE_MIN_INTERVAL_MS);
+      const data = await fetchStockDataset({
+        client, clock: deps.clock, universe: useMovers ? movers.tickers : STOCK_UNIVERSE, maxCalls: maxRequests, sleep: deps.sleep,
+        universeLabel: useMovers ? `today's market-wide gainers (${movers.sessions[0]})` : 'the fixed initial universe (fallback)',
+      });
+      data.dataset.label = useMovers ? 'Massive end-of-day snapshot (market-wide movers)' : data.dataset.label;
+      data.dataset.source = `${MOVERS_SOURCE}; ${data.dataset.source}`;
+      data.dataset.notes.unshift(...movers.notes);
       return emit(data, deps.clock());
     } catch (e) {
       // Errors never contain the key; redact here as well, defensively (with and without the prefix).

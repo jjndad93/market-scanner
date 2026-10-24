@@ -110,7 +110,8 @@ export function createScanService(deps: ScanDeps, maxRequestsCap: number, newsOp
       const startedAt = deps.clock().toISOString();
       try {
         // Fixed arguments only; the market is from SCAN_ROUTES and the budget a validated integer.
-        const args = mode === 'live' ? [market, '--json', '--live', '--max-requests', String(maxRequests)] : [market, '--json'];
+        // Live stock scans look across all US stocks (market-wide gainers under $50), not only the fixed list.
+        const args = mode === 'live' ? [market, '--json', '--live', ...(market === 'stocks' ? ['--movers'] : []), '--max-requests', String(maxRequests)] : [market, '--json'];
         const exitCode = await runScanCommand(args, { ...deps, out: (t) => out.push(t), err: (t) => err.push(t) });
         const stdout = redactSecrets(out.join('\n'), deps.env);
         const stderr = redactSecrets(err.join('\n'), deps.env);

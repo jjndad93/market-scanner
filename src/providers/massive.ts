@@ -70,6 +70,8 @@ export interface StockFetchOptions {
   maxCalls: number;
   minIntervalMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** How the universe was chosen, for the notes (default: the fixed initial universe). */
+  universeLabel?: string;
 }
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -120,7 +122,7 @@ export async function fetchStockDataset(o: StockFetchOptions) {
       stocks.push({ symbol, historyStatus: 'request_failed' });
     }
   }
-  const notes = [`${o.universe.length} tickers in the fixed initial universe; ${o.client.callsMade} of ${o.maxCalls} allowed requests used.`];
+  const notes = [`${o.universe.length} tickers in ${o.universeLabel ?? 'the fixed initial universe'}; ${o.client.callsMade} of ${o.maxCalls} allowed requests used.`];
   if (failed.length > 0) notes.push(`Daily-bars request failed for ${failed.length} ticker(s) (${list(failed)}); they were not evaluated.`);
   if (firstFailure !== null) notes.push(`First failure: ${describeFailure(firstFailure)} Next step: ${nextStepFor(firstFailure, MASSIVE_STOCKS_INFO)}`);
   if (notRequested.length > 0) notes.push(`Daily bars not requested for ${notRequested.length} ticker(s) (${list(notRequested)}) because ${stopReason}; they were not evaluated.`);
@@ -131,5 +133,79 @@ export async function fetchStockDataset(o: StockFetchOptions) {
     stocks,
     /** Additive (Stage 8): the first failure's explanation, or null. */
     firstFailure: firstFailure === null ? null : `${describeFailure(firstFailure)} ${nextStepFor(firstFailure, MASSIVE_STOCKS_INFO)}`,
+  };
+}
+
+// ---- market-wide movers (Daily Market Summary) -------------------------------------------------
+// GET /v2/aggs/grouped/locale/us/market/stocks/{date} returns one end-of-day bar for EVERY US stock
+// in one request ("Included in all Stocks plans", official docs checked 2026-10-24). On the free
+// Basic plan a session is available after midnight ET, so the scan starts from yesterday (New York).
+// Two sessions give each stock's 1-day change; the biggest gainers that pass the price and dollar-
+// volume limits become this run's universe and get the usual per-ticker history and scoring.
+
+export const MARKET_MOVERS = {
+  minPrice: 5, // USD: the scanner's own minimum price
+  maxPrice: 50, // USD
+  minDollarVolume: 20_000_000, // USD traded in the latest session (the scanner's liquidity floor)
+  count: 15, // gainers passed on for full evaluation
+  lookbackDays: 8, // calendar days searched for two trading sessions (weekends and holidays)
+};
+export const MOVERS_SOURCE = 'Massive Daily Market Summary /v2/aggs/grouped/locale/us/market/stocks/{date} (all US stocks, end of day)';
+/** Plain US tickers only (no warrants, units, rights or preferred classes with suffixes). */
+const PLAIN_TICKER = /^[A-Z]{1,5}$/;
+
+export function parseGroupedDaily(json: unknown): Map<string, { close: number; volume: number }> {
+  if (!isRecord(json) || (json.results !== undefined && !Array.isArray(json.results))) throw new MassiveResponseError('market-summary response is not an object with a results array.');
+  const out = new Map<string, { close: number; volume: number }>();
+  for (const r of (json.results as unknown[] | undefined) ?? []) {
+    if (!isRecord(r) || typeof r.T !== 'string' || r.otc === true) continue;
+    const close = r.c, volume = r.v;
+    if (typeof close !== 'number' || !Number.isFinite(close) || close <= 0 || typeof volume !== 'number' || !Number.isFinite(volume) || volume < 0) continue;
+    out.set(r.T, { close, volume });
+  }
+  return out;
+}
+
+export interface MoversResult { tickers: string[]; sessions: string[]; notes: string[]; requestsUsed: number }
+
+/** Finds the latest two sessions and returns the biggest 1-day gainers within the limits. Never invents data. */
+export async function fetchMarketMovers(o: { client: HttpClient; clock: () => Date; maxCalls: number; minIntervalMs?: number; sleep?: (ms: number) => Promise<void>; limits?: Partial<typeof MARKET_MOVERS> }): Promise<MoversResult> {
+  const L = { ...MARKET_MOVERS, ...o.limits };
+  const sleep = o.sleep ?? realSleep;
+  const start = o.client.callsMade;
+  const sessions: { date: string; bars: Map<string, { close: number; volume: number }> }[] = [];
+  let date = addDaysIso(nyDateString(o.clock()), -1);
+  for (let i = 0; i < L.lookbackDays && sessions.length < 2; i++, date = addDaysIso(date, -1)) {
+    const dow = new Date(`${date}T12:00:00Z`).getUTCDay();
+    if (dow === 0 || dow === 6) continue; // weekend: no session, no request
+    if (o.client.callsMade >= o.maxCalls) break;
+    if (o.client.callsMade > start) await sleep(o.minIntervalMs ?? MASSIVE_MIN_INTERVAL_MS);
+    const bars = parseGroupedDaily(await o.client.getJson(`/v2/aggs/grouped/locale/us/market/stocks/${date}`, { adjusted: 'true' }));
+    if (bars.size > 0) sessions.push({ date, bars }); // an empty day is a market holiday
+  }
+  const requestsUsed = o.client.callsMade - start;
+  if (sessions.length < 2) {
+    return { tickers: [], sessions: sessions.map((x) => x.date), requestsUsed, notes: [`Market-wide movers: two recent trading sessions were not found within ${requestsUsed} request(s), so the fixed list was used instead.`] };
+  }
+  const [latest, prev] = sessions as [typeof sessions[0], typeof sessions[0]];
+  const ranked: { t: string; chg: number }[] = [];
+  let inRange = 0;
+  for (const [t, b] of latest.bars) {
+    if (!PLAIN_TICKER.test(t)) continue;
+    const p = prev.bars.get(t);
+    if (!p || b.close < L.minPrice || b.close > L.maxPrice || b.close * b.volume < L.minDollarVolume) continue;
+    inRange++;
+    ranked.push({ t, chg: (b.close / p.close - 1) * 100 });
+  }
+  ranked.sort((a, b) => b.chg - a.chg);
+  const top = ranked.filter((r) => r.chg > 0).slice(0, L.count);
+  return {
+    tickers: top.map((r) => r.t),
+    sessions: [latest.date, prev.date],
+    requestsUsed,
+    notes: [
+      `Market-wide movers: ${latest.bars.size.toLocaleString('en-US')} US stocks on ${latest.date} (vs ${prev.date}); ${inRange.toLocaleString('en-US')} were priced $${L.minPrice}-$${L.maxPrice} with at least $${(L.minDollarVolume / 1e6).toFixed(0)}M traded; the ${top.length} biggest gainers were evaluated (${requestsUsed} request(s) for the market summary).`,
+      'Gainers are picked by the previous session\'s close-to-close change only; the evaluation below adds the 20-session volume baseline and the usual scoring.',
+    ],
   };
 }

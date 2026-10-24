@@ -95,6 +95,11 @@
           <small id="budget-hint" class="muted">Live only. Retries count toward the limit.</small>
         </label>
         <label class="budget">
+          <span>Morning auto-scan</span>
+          <span class="inline"><input id="auto-scan" type="checkbox"> Run a live crypto scan when this page opens</span>
+          <small class="muted">Uses up to your Max API requests each time the page opens (at most once every 30 minutes). With automatic start on, that is every morning when you sign in.</small>
+        </label>
+        <label class="budget">
           <span>News articles per asset</span>
           <input id="news-limit" type="number" min="1" max="20" step="1" value="5" inputmode="numeric">
           <small class="muted">News loads only when you open an asset's panel.</small>

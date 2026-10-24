@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 const state = { status: null, running: false, lastRequest: null, last: null, news: new Map(), wtb: new Map(), cmc: null };
 const MARKET = {
   crypto: { button: 'Scan Crypto', blurb: 'Movers and watchlist candidates from the CoinGecko top 500, using the existing scanner rules.', keyFlag: 'cryptoKeyConfigured', keyEnv: 'COINGECKO_DEMO_API_KEY', provider: 'CoinGecko', pace: 'about 0.7 s apart' },
-  stocks: { button: 'Scan US Stocks', blurb: 'Movers and watchlist candidates from a fixed list of 20 large US stocks (end-of-day bars).', keyFlag: 'stocksKeyConfigured', keyEnv: 'POLYGON_API_KEY', provider: 'Massive', pace: 'about 12.5 s apart (free plan: 5 per minute)' },
+  stocks: { button: 'Scan US Stocks', blurb: 'Live: the previous session\'s biggest gainers across all US stocks priced $5-$50, checked with the scanner rules (end-of-day data; about 17 requests, 3-4 minutes). Offline: a fixed test list.', keyFlag: 'stocksKeyConfigured', keyEnv: 'POLYGON_API_KEY', provider: 'Massive', pace: 'about 12.5 s apart (free plan: 5 per minute)' },
 };
 
 function el(tag, attrs = {}, ...children) {
@@ -62,11 +62,35 @@ async function loadStatus() {
   try {
     const r = await fetch('/api/status', { headers: { accept: 'application/json' } });
     state.status = await r.json();
-    if (Number.isInteger(state.status.defaultMaxRequests)) $('max-requests').value = String(state.status.defaultMaxRequests);
+    const saved = Number(prefs.get('maxRequests'));
+    $('max-requests').value = String(Number.isInteger(saved) && saved >= 1 && saved <= (state.status.maxRequestsCap ?? 160) ? saved : state.status.defaultMaxRequests);
   } catch {
     showError('Could not reach the local server. Is "npm run web" still running?');
   }
   updateControls();
+  maybeAutoScan();
+}
+
+// ---- remembered settings (this browser only) -----------------------------------------------------
+const prefs = {
+  get(k) { try { return localStorage.getItem(`market-scanner:${k}`); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(`market-scanner:${k}`, String(v)); } catch { /* storage blocked: settings just aren't remembered */ } },
+};
+const AUTO_SCAN_GAP_MS = 30 * 60_000;
+
+/** Morning auto-scan: a live crypto scan when the page opens, if you turned it on and the key is set. */
+function maybeAutoScan() {
+  if (!$('auto-scan').checked || state.running || !state.status?.cryptoKeyConfigured) return;
+  const last = Number(prefs.get('lastAutoScan')) || 0;
+  if (Date.now() - last < AUTO_SCAN_GAP_MS) return; // a reload soon after should not spend requests again
+  const n = Number($('max-requests').value);
+  const cap = state.status.maxRequestsCap ?? 160;
+  if (!Number.isInteger(n) || n < 1 || n > cap) return;
+  prefs.set('lastAutoScan', Date.now());
+  document.querySelector('input[name="market"][value="crypto"]').checked = true;
+  document.querySelector('input[name="mode"][value="live"]').checked = true;
+  updateControls();
+  scan({ market: 'crypto', mode: 'live', maxRequests: n, confirmLive: true }, { auto: true });
 }
 
 function showError(text) {
@@ -74,9 +98,10 @@ function showError(text) {
   $('error').hidden = !text;
 }
 
-async function scan(request) {
+async function scan(request, { auto = false } = {}) {
   if (state.running) return;
-  if (request.mode === 'live') {
+  // The morning auto-scan is your standing consent (the Settings checkbox), so it skips the dialog.
+  if (request.mode === 'live' && !auto) {
     const ok = window.confirm(`Run a LIVE ${request.market} scan?\n\nThis spends up to ${request.maxRequests} ${MARKET[request.market].provider} API request(s), counting retries.`);
     if (!ok) return;
     request = { ...request, confirmLive: true };
@@ -385,6 +410,14 @@ function snapshotLink(row) {
   return `${SNAPSHOT_LOG_URL}#add~${b64}`;
 }
 
+/** One link carrying several rows (#adds~): the Snapshot Log shows them as a list to save together. */
+function snapshotBatchLink(rows) {
+  const json = JSON.stringify(rows.map(snapshotPayload));
+  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${SNAPSHOT_LOG_URL}#adds~${b64}`;
+}
+const SEND_TOP = 10;
+
 function snapshotButton(row) {
   if (row.dataKind === 'test_data') return el('span', { class: 'sym', title: 'Run a live scan to save real numbers' }, 'Save to Snapshot Log (live scans only)');
   return el('a', { class: 'linkish', href: snapshotLink(row), target: '_blank', rel: 'noopener noreferrer', title: 'Opens your Asset Snapshot Log with these numbers filled in' }, 'Save to Snapshot Log ↗');
@@ -670,6 +703,13 @@ function render() {
     cov ? `history ${cov.historyFetched} of ${cov.historyEligible}` : null,
     cov ? `${cov.requestsUsed} of ${cov.requestLimit} API requests used` : synthetic ? '0 API requests (offline)' : null,
   ].filter(Boolean).join(' · ')));
+  // Send the top movers of the main table to the Snapshot Log in one go (to check them on your phone).
+  const top = view ? [...view.sections[0].rows].filter((x) => x.row.dataKind !== 'test_data')
+    .sort((a, b) => Math.abs(b.row.change.short.value ?? 0) - Math.abs(a.row.change.short.value ?? 0)).slice(0, SEND_TOP).map((x) => x.row) : [];
+  if (top.length) {
+    root.append(el('p', { class: 'kv' }, el('a', { class: 'linkish', href: snapshotBatchLink(top), target: '_blank', rel: 'noopener noreferrer' },
+      `Send these ${top.length} to Snapshot Log ↗`), ' ', el('span', { class: 'sym' }, `The top ${top.length} of "${view.sections[0].title}", biggest move first. Review and save them there, then check them on your phone in the Claude app.`)));
+  }
   root.append(el('p', { class: 'kv' }, el('b', {}, 'Freshness: '), s.freshness));
   // Crypto live scans: how far the history requests got, in plain English, from the scan's own figures.
   const coverage = data.market === 'crypto' ? coverageSentences(coverageFigures(r)) : [];
@@ -884,7 +924,14 @@ document.addEventListener('DOMContentLoaded', () => {
     runSearch();
   });
   document.querySelectorAll('input[name="mode"], input[name="market"]').forEach((r) => r.addEventListener('change', updateControls));
-  $('max-requests').addEventListener('input', updateControls);
+  $('max-requests').addEventListener('input', () => { updateControls(); prefs.set('maxRequests', $('max-requests').value); });
+  $('auto-scan').checked = prefs.get('autoScan') === '1';
+  $('auto-scan').addEventListener('change', () => prefs.set('autoScan', $('auto-scan').checked ? '1' : '0'));
+  for (const id of ['total-budget', 'unit-limit', 'preference', 'direction']) {
+    const v = prefs.get(id);
+    if (v !== null) $(id).value = v;
+    $(id).addEventListener('change', () => prefs.set(id, $(id).value));
+  }
   // Budget controls re-filter the last result only: no request, no rescan.
   for (const id of ['total-budget', 'unit-limit', 'no-unit-limit', 'preference', 'direction']) {
     $(id).addEventListener('input', () => { updateControls(); render(); });

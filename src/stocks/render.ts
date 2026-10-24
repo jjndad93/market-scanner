@@ -54,7 +54,7 @@ export function summarizeStockScan(r: StockScanResult): ScanSummary {
     mode: live ? 'live' : 'offline',
     data: live ? 'live Massive end-of-day bars (latest completed session; no intraday data)' : 'synthetic fixture (TEST DATA), not market data',
     source: r.dataset.source,
-    scope: live ? `${r.universe} tickers in the fixed initial universe` : `${r.universe} tickers in the fixture`,
+    scope: live ? (/market-wide movers/.test(r.dataset.label) ? `${r.universe} market-wide gainers priced $5-$50 (previous session)` : `${r.universe} tickers in the fixed initial universe`) : `${r.universe} tickers in the fixture`,
     status: partialReasons.length > 0 ? 'partial' : 'complete',
     partialReasons,
     counts: {
