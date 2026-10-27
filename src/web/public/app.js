@@ -1,7 +1,7 @@
 // Market Scanner dashboard. Renders the existing scanner's JSON result plus server-built rows.
 // All scanner text is inserted with textContent, never as HTML.
 import { buildView, parseBudgetControls } from '/budget.js';
-import { coverageFigures, coverageSentences, dashboardWording, exclusionBreakdown, leadCrossCheckWarnings, plainCheck } from '/simple-view.js';
+import { coverageFigures, coverageSentences, dashboardWording, exclusionBreakdown, leadCrossCheckWarnings, outlookView, plainCheck, profileContext, supplyText } from '/simple-view.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { status: null, running: false, lastRequest: null, last: null, news: new Map(), wtb: new Map(), cmc: null };
@@ -912,8 +912,77 @@ function renderAsset(coin, d) {
     b.addEventListener('click', () => loadAsset(coin, true));
     card.append(b);
   }
+  // Project profile: only on request (1 CoinGecko request in live mode, after confirmation).
+  const profileBox = el('div', { class: 'profile' });
+  const pb = el('button', { type: 'button', class: 'linkish' }, `Show project profile${d.mode === 'live' ? ' (1 CoinGecko request)' : ''}`);
+  pb.addEventListener('click', () => loadProfile(coin, d, profileBox, pb));
+  card.append(pb, profileBox);
   card.append(el('p', { class: 'sym' }, 'Shown for research only. A search result is not a recommendation, and this tool cannot buy anything.'));
   root.append(card);
+}
+
+async function loadProfile(coin, d, box, button) {
+  showSearchError('');
+  setSearchBusy(`Loading the ${coin.name} profile…`);
+  try {
+    const res = await searchPost('/api/crypto/profile', { mode: d.mode, id: coin.id, refresh: false }, `Load the project profile for ${coin.name} (${coin.symbol}, id ${coin.id})?`);
+    if (res.cancelled) return;
+    if (!res.data.ok) return showSearchError(res.data.error || `The profile request failed (HTTP ${res.r.status}).`);
+    button.hidden = true;
+    renderProfile(box, res.data, d);
+  } catch {
+    showSearchError('Could not reach the local server. Is "npm run web" still running?');
+  } finally {
+    setSearchBusy('');
+  }
+}
+
+const NA = 'Not available';
+function profileRow(label, ...value) {
+  return el('tr', {}, el('td', { class: 'pl' }, label), el('td', {}, ...value));
+}
+
+function renderProfile(box, r, d) {
+  box.replaceChildren();
+  const p = r.profile;
+  box.append(el('div', { class: 'profile-head' }, 'About this crypto'));
+  if (r.dataKind === 'test_data') box.append(el('div', { class: 'sym' }, 'TEST DATA: invented project.'));
+  const rows = [];
+  if (!p) {
+    box.append(el('p', { class: 'empty' }, r.message || 'No profile available.'));
+  } else {
+    rows.push(profileRow('What it is', p.descriptionExcerpt ?? NA, p.descriptionExcerpt ? el('span', { class: 'sym' }, ' Project-provided text (CoinGecko), not verified.') : null));
+    rows.push(profileRow('Launched', p.genesisDate ? `${p.genesisDate} ` : 'Unknown', p.genesisDate ? el('span', { class: 'sym' }, 'as listed by CoinGecko') : null));
+    rows.push(profileRow('Purpose', p.categories.length ? `Categories: ${p.categories.join(', ')}` : NA, el('span', { class: 'sym' }, p.categories.length ? ' (CoinGecko)' : '')));
+    rows.push(profileRow('Supply', supplyText(p)));
+    const growth = (r.forecasts ?? []).flatMap((f) => f.growthFactors.map((g) => `${g} (${f.publisher}, ${f.published})`)).slice(0, 3);
+    rows.push(profileRow('Why it might grow', growth.length ? el('ul', { class: 'plain-warnings' }, ...growth.map((g) => el('li', {}, g))) : 'Not available: no sourced research for this coin.', growth.length ? el('div', { class: 'sym' }, 'Sourced opinions, not facts.') : null));
+    const ctx = profileContext(p, d.asset);
+    rows.push(profileRow('Main risks', ctx.length ? el('ul', { class: 'plain-warnings' }, ...ctx.map((c) => el('li', { class: 'plain-caution' }, c))) : 'None found in this data (not proof of low risk).'));
+    const links = [p.homepage ? el('a', { href: p.homepage, target: '_blank', rel: 'noopener noreferrer nofollow' }, 'Website') : null, p.whitepaper ? el('a', { href: p.whitepaper, target: '_blank', rel: 'noopener noreferrer nofollow' }, 'Whitepaper') : null].filter(Boolean);
+    if (links.length) rows.push(profileRow('Links', ...links.flatMap((l, i) => (i ? [' · ', l] : [l]))));
+    box.append(el('table', { class: 'profile-table' }, el('tbody', {}, ...rows)));
+  }
+  // 2030 outlook: curated, sourced, each source separate; the implied change uses one reference price.
+  const ref = d.asset?.price?.value ?? null;
+  const o = outlookView(r.forecasts, ref, d.asset?.lastUpdated?.value ?? null, new Date());
+  box.append(el('div', { class: 'profile-head' }, '2030 outlook ', el('span', { class: 'sym' }, '· not a guarantee')));
+  if (o.status === 'none') {
+    box.append(el('p', { class: 'sym' }, o.message));
+  } else {
+    for (const e of o.entries) {
+      box.append(el('div', { class: 'outlook' },
+        el('div', {}, el('span', { class: 'chip cat' }, e.type === 'analyst_valuation_model' ? 'Analyst valuation model' : 'Model scenario'), ' ',
+          el('b', {}, e.publisher), ` · published ${e.published}${e.dated ? ` (dated: ${e.ageMonths} months old)` : ''} · `,
+          el('a', { href: e.url, target: '_blank', rel: 'noopener noreferrer' }, 'source')),
+        el('div', {}, e.figures.map((x) => `${x.case[0].toUpperCase()}${x.case.slice(1)} ${e.approximate ? '~' : ''}$${x.value.toLocaleString()}${x.impliedPct === null ? '' : ` (${x.impliedPct > 0 ? '+' : ''}${x.impliedPct.toFixed(0)}%)`}`).join(' · '),
+          e.approximate ? el('span', { class: 'sym' }, ' Approximate, as published.') : null),
+        el('div', { class: 'sym' }, e.assumptions)));
+    }
+    box.append(el('p', { class: 'sym' }, [o.message, o.disagreement,
+      o.reference ? `% change vs $${o.reference.price.toLocaleString()}, the CoinGecko USD price${o.reference.asOf ? ` at ${when(o.reference.asOf)}` : ''}.` : 'Implied change not available: no current price.'].filter(Boolean).join(' ')));
+  }
+  box.append(el('p', { class: 'sym' }, `Source: ${r.source}. Fetched ${when(r.fetchedAt)}${r.fromCache ? ' (cached; no request made)' : `; requests used: ${r.requestsUsed}`}.`));
 }
 
 document.addEventListener('DOMContentLoaded', () => {

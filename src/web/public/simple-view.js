@@ -130,3 +130,72 @@ export function plainCheck(x) {
   }
   return { text: 'Same asset; both sources show a similar price and market cap.' };
 }
+
+// ---- crypto project profile ("About this crypto") ------------------------------------------------------
+// Pure formatting of what /coins/{id} returned and the existing asset view already shows. Context
+// signals are evidence to look into, never a verdict: each says what it does NOT imply.
+
+const big = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(0));
+
+/** "660M circulating of 1B max (66%)", or what is known. */
+export function supplyText(p) {
+  if (!p || p.circulatingSupply === null) return 'Not available';
+  if (p.maxSupply === null) return `${big(p.circulatingSupply)} circulating; no maximum supply is listed`;
+  return `${big(p.circulatingSupply)} circulating of ${big(p.maxSupply)} max (${Math.round(p.circulatingSupply / p.maxSupply * 100)}%)`;
+}
+
+/** Thresholds for showing a context signal (presentation heuristics, not risk scores). */
+export const CONTEXT_RULES = { unissuedSharePct: 20, rankAbove: 250, belowAthPct: 80, turnoverBelowPct: 1 };
+
+/** Evidence-based context lines (main risks to check), from the profile and the asset view. */
+export function profileContext(p, asset) {
+  const out = [];
+  if (!p) return out;
+  if (p.maxSupply !== null && p.circulatingSupply !== null && p.maxSupply > 0) {
+    const unissued = (1 - p.circulatingSupply / p.maxSupply) * 100;
+    if (unissued >= CONTEXT_RULES.unissuedSharePct) out.push(`${Math.round(unissued)}% of the maximum supply is not yet circulating. New supply can add selling pressure; check the release schedule.`);
+  }
+  if ((p.categories ?? []).some((c) => /\bmeme\b/i.test(c))) out.push('CoinGecko lists it as a meme coin. Such tokens are usually driven by attention rather than revenue.');
+  const vol = asset?.volume24h?.value ?? null;
+  const cap = asset?.marketCap?.value ?? null;
+  if (vol !== null && cap !== null && cap > 0 && vol / cap * 100 < CONTEXT_RULES.turnoverBelowPct) {
+    out.push(`Daily trading is about ${(vol / cap * 100).toFixed(1)}% of its market cap, so large orders may move the price.`);
+  }
+  if (p.marketCapRank !== null && p.marketCapRank > CONTEXT_RULES.rankAbove) out.push(`Ranked #${p.marketCapRank} by market cap. Smaller assets often trade less and swing more; rank alone says nothing about quality.`);
+  if (p.athChangePct !== null && p.athChangePct <= -CONTEXT_RULES.belowAthPct) out.push(`${Math.round(Math.abs(p.athChangePct))}% below its all-time high. This shows past volatility; it does not mean it will or will not recover.`);
+  return out.slice(0, 3);
+}
+
+// ---- 2030 outlook ----------------------------------------------------------------------------------------
+// Curated, sourced entries only (src/web/forecasts.ts). Each source is shown on its own; nothing is
+// averaged. The implied change uses one stated reference price (the current CoinGecko USD price).
+
+export const DATED_AFTER_MONTHS = 18;
+const CASES = ['bear', 'base', 'bull'];
+
+export function impliedChangePct(target, reference) {
+  if (!(typeof target === 'number' && target > 0) || !(typeof reference === 'number' && Number.isFinite(reference) && reference > 0)) return null;
+  return (target - reference) / reference * 100;
+}
+
+/** Everything the 2030 outlook block shows, computed from the entries and a reference price. */
+export function outlookView(forecasts, referencePrice, referenceAsOf, now) {
+  const list = Array.isArray(forecasts) ? forecasts : [];
+  if (list.length === 0) return { status: 'none', message: 'No credible, comparable 2030 forecast is on file for this asset.', entries: [], disagreement: null, reference: null };
+  const nowMs = (now instanceof Date ? now : new Date(now)).getTime();
+  const entries = list.map((f) => {
+    const ageMonths = Math.floor((nowMs - Date.parse(`${f.published}T00:00:00Z`)) / (30.44 * 86_400_000));
+    return {
+      ...f,
+      ageMonths,
+      dated: ageMonths > DATED_AFTER_MONTHS,
+      figures: CASES.filter((k) => typeof f.cases?.[k] === 'number').map((k) => ({ case: k, value: f.cases[k], impliedPct: impliedChangePct(f.cases[k], referencePrice) })),
+    };
+  });
+  const bases = entries.map((e) => e.cases?.base).filter((v) => typeof v === 'number');
+  const disagreement = bases.length > 1 && Math.max(...bases) / Math.min(...bases) > 2
+    ? `Sources disagree widely: base cases range from $${Math.min(...bases).toLocaleString()} to $${Math.max(...bases).toLocaleString()}.`
+    : null;
+  const reference = typeof referencePrice === 'number' && referencePrice > 0 ? { price: referencePrice, asOf: referenceAsOf ?? null } : null;
+  return { status: list.length === 1 ? 'one' : 'several', message: list.length === 1 ? 'One source\'s estimate, not a consensus.' : `${list.length} separate sources; not averaged.`, entries, disagreement, reference };
+}

@@ -1,0 +1,36 @@
+{
+  "_comment": "TEST DATA: invented projects in the CoinGecko /coins/{id} response shape, for the dashboard's offline project profile. NOT real project information.",
+  "asOf": "2026-10-21T11:58:00Z",
+  "profiles": {
+    "syn-alpha": {
+      "id": "syn-alpha", "symbol": "salp", "name": "Synthetic Alpha",
+      "description": { "en": "<p>Synthetic Alpha is an invented <a href=\"https://example.com\">test network</a> for sharing files between users. Its token pays for storage. It was created only for testing this dashboard and has no real users.</p>" },
+      "genesis_date": "2019-05-14",
+      "categories": ["Storage", "Layer 1 (L1)", "Storage"],
+      "links": { "homepage": ["", "https://example.com/synthetic-alpha"], "whitepaper": "https://example.com/synthetic-alpha/whitepaper.pdf" },
+      "market_cap_rank": 41,
+      "market_data": { "circulating_supply": 660000000, "total_supply": 900000000, "max_supply": 1000000000, "ath_change_percentage": { "usd": -71.2 } },
+      "last_updated": "2026-10-21T11:57:00.000Z"
+    },
+    "syn-outside": {
+      "id": "syn-outside", "symbol": "sout", "name": "Synthetic Outsider",
+      "description": { "en": "" },
+      "genesis_date": null,
+      "categories": [],
+      "links": { "homepage": ["javascript:alert(1)"], "whitepaper": "" },
+      "market_cap_rank": 612,
+      "market_data": { "circulating_supply": 480000000, "total_supply": null, "max_supply": null, "ath_change_percentage": { "usd": -12 } },
+      "last_updated": "2026-10-21T11:55:00.000Z"
+    },
+    "syn-bravo": {
+      "id": "syn-bravo", "symbol": "sbrv", "name": "Synthetic Bravo",
+      "description": { "en": "Synthetic Bravo is an invented meme token used for testing. It has no stated purpose beyond community trading." },
+      "genesis_date": "2031-01-01",
+      "categories": ["Meme"],
+      "links": { "homepage": ["https://example.com/synthetic-bravo"], "whitepaper": null },
+      "market_cap_rank": 77,
+      "market_data": { "circulating_supply": 1000000000, "total_supply": 1000000000, "max_supply": 1000000000, "ath_change_percentage": { "usd": -95.5 } },
+      "last_updated": "2026-10-21T11:57:00.000Z"
+    }
+  }
+}

@@ -20,7 +20,9 @@ import { readFileSync } from 'node:fs';
 import { has, type Evidence } from '../core/evidence.ts';
 import { COINGECKO_ATTRIBUTION, COINGECKO_DEMO_BASE_URL, COINGECKO_KEY_ENV, COINGECKO_KEY_HEADER, ProviderResponseError, parseMarkets } from '../providers/coingecko.ts';
 import { COIN_ID_PATTERN, type SearchCoin, fetchCoinMarket, fetchCoinSearch, parseSearchCoins } from '../providers/coingecko-search.ts';
+import { type CoinProfile, fetchCoinProfile, parseCoinProfile } from '../providers/coingecko-profile.ts';
 import { HttpError, type FetchLike, createHttpClient } from '../providers/http.ts';
+import { forecastsFor } from './forecasts.ts';
 import { normalizeDataset } from '../scanner/normalize.ts';
 import type { RawAsset } from '../scanner/types.ts';
 import type { LastScan } from './news.ts';
@@ -28,6 +30,10 @@ import type { LastScan } from './news.ts';
 export const SEARCH_MAX_RESULTS = 25;
 export const SEARCH_CACHE_TTL_MS = 15 * 60_000;
 export const ASSET_CACHE_TTL_MS = 5 * 60_000;
+/** Project profiles (description, launch date, supply) change slowly: kept in memory for a day. */
+export const PROFILE_CACHE_TTL_MS = 24 * 60 * 60_000;
+export const BUNDLED_CRYPTO_PROFILE_FIXTURE = new URL('../../test/fixtures/crypto-profile.synthetic.json', import.meta.url);
+export const PROFILE_SOURCE = 'CoinGecko Demo API /coins/{id} (project description as provided by the project; supply and launch date as listed by CoinGecko)';
 /** 2 s apart = at most 30 requests/minute, well under the Demo plan's documented 100 calls/minute (shared with scans, which never overlap). */
 export const LIVE_MIN_INTERVAL_MS = 2_000;
 export const SESSION_REQUEST_LIMIT = 100;
@@ -104,7 +110,7 @@ function failureMessage(e: unknown): string {
 }
 
 /** Validates a search or lookup body. */
-export function validateSearchBody(body: string, kind: 'search' | 'asset'): { mode: Mode; value: string; refresh: boolean; confirmLive: boolean } | { error: string } {
+export function validateSearchBody(body: string, kind: 'search' | 'asset' | 'profile'): { mode: Mode; value: string; refresh: boolean; confirmLive: boolean } | { error: string } {
   if (body.length > 1024) return { error: 'Request body too large.' };
   let d: unknown;
   try {
@@ -122,9 +128,10 @@ export function validateSearchBody(body: string, kind: 'search' | 'asset'): { mo
   return { mode: r.mode, value, refresh: r.refresh === true, confirmLive: r.confirmLive === true };
 }
 
-export function createCryptoSearchService(deps: SearchDeps, opts: { getLastCrypto: () => LastScan | undefined; scanRunning: () => boolean; fixture?: URL; minIntervalMs?: number; sessionLimit?: number }) {
+export function createCryptoSearchService(deps: SearchDeps, opts: { getLastCrypto: () => LastScan | undefined; scanRunning: () => boolean; fixture?: URL; profileFixture?: URL; minIntervalMs?: number; sessionLimit?: number }) {
   const searchCache = new Map<string, { at: number; coins: SearchCoin[]; skipped: number }>();
   const assetCache = new Map<string, { at: number; raw: RawAsset[] }>();
+  const profileCache = new Map<string, { at: number; profile: CoinProfile }>();
   let busy = false;
   let lastLiveAt = -Infinity;
   let used = 0;
@@ -214,6 +221,30 @@ export function createCryptoSearchService(deps: SearchDeps, opts: { getLastCrypt
       assetCache.set(id, { at: now, raw: r.value });
       const asset = assetView(r.value, id, 'live', new Date(now).toISOString());
       return reply(200, { ...base, fetchedAt: new Date(now).toISOString(), fromCache: false, requestsUsed: r.calls, asset, message: asset ? null : noData, ...scanStatus(id), ...session() });
+    },
+    /**
+     * Project profile, only when the user asks: one /coins/{id} request under the same guards as a
+     * lookup (confirmation, 1-call budget, pacing, session cap, never during a scan), cached in memory
+     * for a day. The curated 2030 outlooks (forecasts.ts) are attached; they cost no request.
+     */
+    async profile(mode: Mode, id: string, refresh: boolean, confirmLive: boolean): Promise<Reply> {
+      const now = deps.clock();
+      const outlooks = forecastsFor(id, now);
+      if (mode === 'offline') {
+        const f = JSON.parse(readFileSync(opts.profileFixture ?? BUNDLED_CRYPTO_PROFILE_FIXTURE, 'utf8')) as { asOf: string; profiles: Record<string, unknown> };
+        const raw = Object.hasOwn(f.profiles, id) ? f.profiles[id] : null;
+        const profile = raw ? parseCoinProfile(raw, id, new Date(f.asOf)) : null;
+        return reply(200, { mode, id, dataKind: 'test_data', source: 'Synthetic profile fixture (TEST DATA, invented project)', fetchedAt: f.asOf, fromCache: false, requestsUsed: 0, profile, message: profile ? null : 'No profile in the offline fixture for this coin.', forecasts: outlooks, ...session() });
+      }
+      const hit = profileCache.get(id);
+      const base = { mode, id, dataKind: 'verified_market_data', source: PROFILE_SOURCE, attribution: COINGECKO_ATTRIBUTION, forecasts: outlooks };
+      if (hit && now.getTime() - hit.at < PROFILE_CACHE_TTL_MS && !refresh) {
+        return reply(200, { ...base, fetchedAt: new Date(hit.at).toISOString(), fromCache: true, requestsUsed: 0, profile: hit.profile, ...session() });
+      }
+      const r = await live(confirmLive, (client) => fetchCoinProfile(client, id, now));
+      if (!('value' in r)) return r;
+      profileCache.set(id, { at: now.getTime(), profile: r.value });
+      return reply(200, { ...base, fetchedAt: now.toISOString(), fromCache: false, requestsUsed: r.calls, profile: r.value, ...session() });
     },
   };
 }

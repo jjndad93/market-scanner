@@ -52,7 +52,7 @@ test('missing required inputs are reported as missing, and block the assessment'
 test('invalid inputs are reported as invalid with what was supplied and why, never as missing or zero', () => {
   const text = [replaceLine('Strike', 'Strike: abc'), ''].join('')
     .replace(/^Expiration:.*$/m, 'Expiration: 2026-13-45')
-    .replace(/^Premium:.*$\n/m, '')
+    .replace(/^Premium:.*\r?\n/m, '') // LF or CRLF checkouts (core.autocrlf)
     .replace(/^Ask:.*$/m, 'Ask: -2.45');
   const { ev } = evaluate(text);
   assert.equal(ev.verdict, 'INSUFFICIENT_DATA');

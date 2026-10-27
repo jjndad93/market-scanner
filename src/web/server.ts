@@ -76,7 +76,7 @@ const NEWS_ROUTES: Record<string, Market> = { '/api/news/crypto': 'crypto', '/ap
 /** "Where to buy" for one row of the last scan, fetched only when the user opens its panel. */
 const WTB_ROUTES: Record<string, Market> = { '/api/where-to-buy/crypto': 'crypto', '/api/where-to-buy/stocks': 'stocks' };
 /** Crypto asset search (any CoinGecko coin) and one-asset lookup; separate from scans. */
-const SEARCH_ROUTES: Record<string, 'search' | 'asset'> = { '/api/crypto/search': 'search', '/api/crypto/asset': 'asset' };
+const SEARCH_ROUTES: Record<string, 'search' | 'asset' | 'profile'> = { '/api/crypto/search': 'search', '/api/crypto/asset': 'asset', '/api/crypto/profile': 'profile' };
 /** CoinMarketCap cross-check of the last crypto scan's research leads (user-triggered). */
 const CMC_ROUTE = '/api/crypto/cmc-check';
 
@@ -201,7 +201,9 @@ export async function handleRequest(req: WebRequest, service: ScanService, env: 
       const s = validateSearchBody(req.body, kind);
       if ('error' in s) return json(400, { ok: false, error: s.error });
       try {
-        const r = kind === 'search' ? await service.search.search(s.mode, s.value, s.refresh, s.confirmLive) : await service.search.asset(s.mode, s.value, s.refresh, s.confirmLive);
+        const r = kind === 'search' ? await service.search.search(s.mode, s.value, s.refresh, s.confirmLive)
+          : kind === 'profile' ? await service.search.profile(s.mode, s.value, s.refresh, s.confirmLive)
+            : await service.search.asset(s.mode, s.value, s.refresh, s.confirmLive);
         return { ...json(r.status, r.data), body: redactSecrets(JSON.stringify(r.data), env) };
       } catch (e) {
         return json(500, { ok: false, error: redactSecrets(`Unexpected error: ${e instanceof Error ? e.message : String(e)}`, env) });

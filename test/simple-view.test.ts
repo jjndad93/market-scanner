@@ -46,7 +46,7 @@ test('cross-check sentences: identity is not agreement; missing values are "coul
 
 test('page: each lead\'s cautions show with its coin; not-checked coins keep their explanation; evidence folds', () => {
   const app = readFileSync(new URL('../src/web/public/app.js', import.meta.url), 'utf8');
-  assert.match(app, /import \{ coverageFigures, coverageSentences, dashboardWording, exclusionBreakdown, leadCrossCheckWarnings, plainCheck \} from '\/simple-view\.js';/);
+  assert.match(app, /import \{ coverageFigures, coverageSentences, dashboardWording, exclusionBreakdown, leadCrossCheckWarnings, outlookView, plainCheck, profileContext, supplyText \} from '\/simple-view\.js';/);
   // Merged layout: evaluated leads are table rows; coins that could not be evaluated are listed in full;
   // every cross-check card is shown.
   assert.match(app, /list\.length \? el\('ul', \{ class: 'leads' \}, \.\.\.list\.map\(discoveryEntry\)\)/);

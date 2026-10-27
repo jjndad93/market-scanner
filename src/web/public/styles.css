@@ -185,3 +185,10 @@ details.settings > .controls { margin-top: 8px; }
 /* Research-lead cautions under a coin in the table */
 td.asset .plain-warnings { list-style: none; padding: 0; margin: 6px 0 0; max-width: 340px; }
 td.asset .plain-caution { margin: 2px 0; color: var(--warn); font-size: 12px; white-space: normal; }
+/* Crypto project profile (compact, inside the asset details) */
+.profile { margin-top: 6px; }
+.profile-head { font-weight: 600; margin: 10px 0 4px; }
+.profile-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+.profile-table td { border: 0; padding: 3px 8px 3px 0; vertical-align: top; }
+.profile-table td.pl { color: var(--muted); white-space: nowrap; width: 1%; }
+.outlook { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border); }
