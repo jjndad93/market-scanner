@@ -1,0 +1,1720 @@
+diff -ru -x node_modules -N base/README.md work/README.md
+--- base/README.md	2026-10-28 05:58:04.914741638 -0500
++++ work/README.md	2026-10-28 06:20:19.420461578 -0500
+@@ -118,8 +118,8 @@
+ 
+ If the price lies outside the provider's own 24h low–high (snapshots taken at different times), the
+ range is not computed and the reason is shown. Not available: an intraday price series, the bid/ask
+-spread, and, for stocks, the intraday range (the end-of-day bars carry a high and low, but they are
+-not parsed yet).
++spread, and, for stocks, intraday prices (the day's open, high and low are now read from the
++end-of-day bars and shown as the day's range, close vs high and the opening gap).
+ 
+ **Re-run** repeats the last scan. Synthetic results carry a TEST DATA banner.
+ 
+@@ -931,6 +931,24 @@
+ 
+ The limits are in `MARKET_MOVERS` in `src/providers/massive.ts`. A run uses about 17 requests at the free plan's pace (12.5 s apart), so 3-4 minutes. If two sessions cannot be found, the scan falls back to the fixed list and says so in its notes.
+ 
++**Security types (added 2026-10-28).** Before ranking, the scan reads Massive's **All Tickers** reference (`/v3/reference/tickers`, free on Basic; up to 15 pages, cached on this computer for 7 days in `%LOCALAPPDATA%\market-scanner\massive-tickers`). Ordinary stocks and ADRs are kept; ordinary ETFs/ETNs are kept and labelled (e.g. `[ETF]`); **leveraged and inverse ETFs/ETNs** (detected from the fund name, e.g. "2X", "Ultra", "Bear", "Inverse") and warrants, rights, units and preferreds are left out, and the notes count what was left out and why. When the reference cannot be loaded, stocks are still evaluated and shown as "Security type not checked". The weekly refresh costs about 12 extra requests once a week; on other days the run stays at about 17.
++
++**Liquidity pre-check.** The scanner requires a 20-session *median* of $20M traded, but the gainers list used to pick by one day's $20M, so one-day spikes could use up the 15 slots and then fail. Gainers that also traded $20M in the previous session are now picked first. The scanner's own thresholds are unchanged (`test/rules-locked.test.ts` locks them).
++
++**Stock warnings (display only).** From the session's open, high and low: closing 10%+ below the day's high, a day's range of 15%+, or a gap of 8%+ from the previous close (`STOCK_RISK_FLAGS` in `src/web/rows.ts`). They never change a score.
++
++## Track record (candidate journal)
++
++After every **live** scan the dashboard saves the evaluated rows to `%LOCALAPPDATA%\market-scanner\candidate-journal` (one small JSON file per scan, kept 180 days; never test data, never sent anywhere). A *candidate* is a row the scanner qualified (Mover or Watchlist). Its result after **1, 3 and 7 days** is measured from the price when it was first flagged to the first later scan that saw the same asset in that window. This costs no request and nothing is estimated: an asset no later scan observed stays "not measured" (common for stocks, which a later scan sees only if they are among that day's gainers). The dashboard shows one line under the scan summary and the details under "How earlier candidates did". Past results do not predict future moves.
++
++## Row summary and attention check
++
++Each row shows, under the asset name: why it is listed, **evidence quality** (Test data / Limited, with the reason / One source, not independently confirmed), the **key risk**, and the **next step** (`src/web/brief.ts`). The scan's full caution list is under the row's "Cautions, category & volatility". These are kept separate from the scanner's score (market confirmation) and from the news panel (catalyst); nothing is blended into one number.
++
++**Attention (crypto, optional):** "Check trending searches" reads CoinGecko's `/search/trending` (top coins by CoinGecko user searches, last 24 hours; 1 request after you confirm, cached 30 minutes; offline uses test data) and marks matching rows "Attention: #n on CoinGecko's trending searches". It is search interest on one site, **not** social-media coverage, sentiment or evidence of buying.
++
++**Sources checked 2026-10-28, not added:** X API (paid per post read), LunarCrush (paid, no free API), Santiment free tier (1,000 calls/month, restricted metrics lagged 30 days), Reddit (API access now needs approval), Bluesky search (intermittent 403s), Google Trends API (alpha only), StockTwits (no official API information found). SEC EDGAR (`data.sec.gov`, no key, 10 requests/second, contact User-Agent) and Wikimedia pageviews (no key) are accessible and are the best next free catalyst/attention sources; neither is wired in yet.
++
+ ## Dashboard conveniences
+ 
+ - **Remembered settings:** Max API requests, budget, unit-price limit, Show and Direction are remembered in this browser.
+diff -ru -x node_modules -N base/src/providers/coingecko-search.ts work/src/providers/coingecko-search.ts
+--- base/src/providers/coingecko-search.ts	2026-10-28 05:58:04.909355942 -0500
++++ work/src/providers/coingecko-search.ts	2026-10-28 06:14:55.055727688 -0500
+@@ -63,3 +63,30 @@
+     vs_currency: 'usd', ids: id, price_change_percentage: '24h,7d', sparkline: 'false',
+   }));
+ }
++
++/**
++ * CoinGecko trending: "top 15 trending coins … based on user searches in the last 24 hours" (Demo
++ * API reference, GET /search/trending, checked 2026-10-28). This is SEARCH INTEREST ON ONE SITE:
++ * not social media coverage, not sentiment, not buying. Order is CoinGecko's; rank = position.
++ */
++export interface TrendingCoin { id: string; name: string; symbol: string; trendRank: number; marketCapRank: number | null }
++export function parseTrending(json: unknown): { coins: TrendingCoin[]; skipped: number } {
++  if (!isRecord(json) || !Array.isArray(json.coins)) throw new ProviderResponseError('/search/trending did not return an object with a coins array.');
++  const coins: TrendingCoin[] = [];
++  let skipped = 0;
++  for (const entry of json.coins.slice(0, 30)) {
++    const c = isRecord(entry) && isRecord(entry.item) ? entry.item : null;
++    const id = c && typeof c.id === 'string' && COIN_ID_PATTERN.test(c.id) ? c.id : null;
++    const name = c ? cleanText(c.name, 120) : null;
++    const symbol = c ? cleanText(c.symbol, 30) : null;
++    if (!c || id === null || name === null || symbol === null || coins.some((x) => x.id === id)) { skipped++; continue; }
++    const r = c.market_cap_rank;
++    coins.push({ id, name, symbol: symbol.toUpperCase(), trendRank: coins.length + 1, marketCapRank: typeof r === 'number' && Number.isInteger(r) && r >= 1 ? r : null });
++  }
++  return { coins, skipped };
++}
++
++/** One request: CoinGecko's trending coins (search interest, last 24 hours). */
++export async function fetchTrending(client: HttpClient) {
++  return parseTrending(await client.getJson('/search/trending', {}));
++}
+diff -ru -x node_modules -N base/src/providers/massive-tickers.ts work/src/providers/massive-tickers.ts
+--- base/src/providers/massive-tickers.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/src/providers/massive-tickers.ts	2026-10-28 06:04:09.252577044 -0500
+@@ -0,0 +1,180 @@
++/**
++ * Security types for US stock tickers, from Massive's ticker reference: GET /v3/reference/tickers
++ * (official docs checked 2026-10-28: "Included in all Stocks plans", including the free Stocks
++ * Basic plan; up to 1,000 tickers per request; `type` codes such as CS, ADRC, ETF, ETN, WARRANT,
++ * RIGHT, UNIT, PFD; pages continue through `next_url`).
++ *
++ * Used by market-wide stock scans so that only ordinary stocks, depositary receipts and ordinary
++ * ETFs take a candidate slot. The reference changes slowly, so the parsed map is cached on disk for
++ * REFERENCE_MAX_AGE_MS and refreshed only when stale, within the scan's own request limit.
++ *
++ * Leveraged and inverse ETFs are NOT a provider type: they are recognised by their fund NAME
++ * (e.g. "2X", "Ultra", "Bear", "Inverse"). That is a heuristic and is labelled as one.
++ */
++
++import { createHash } from 'node:crypto';
++import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++import type { SecurityInfo } from '../stocks/types.ts';
++import { HttpError, type HttpClient } from './http.ts';
++import { MassiveResponseError } from './massive.ts';
++import { cleanText } from './massive-news.ts';
++
++export const TICKER_REFERENCE_PATH = '/v3/reference/tickers';
++export const REFERENCE_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
++/** Upper bound on reference pages per refresh (about 12 are expected for active US stocks). */
++export const REFERENCE_MAX_PAGES = 15;
++const CACHE_VERSION = 1;
++
++export interface TickerRef { name: string; type: string }
++export interface TickerReference { fetchedAt: string; tickers: Map<string, TickerRef>; complete: boolean }
++
++const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
++
++/** One reference page -> entries + the cursor of the next page (only from a next_url on the same host and path). */
++export function parseTickerPage(json: unknown): { entries: [string, TickerRef][]; cursor: string | null } {
++  if (!isRecord(json) || (json.results !== undefined && !Array.isArray(json.results))) throw new MassiveResponseError('ticker-reference response is not an object with a results array.');
++  const entries: [string, TickerRef][] = [];
++  for (const r of (json.results as unknown[] | undefined) ?? []) {
++    if (!isRecord(r) || typeof r.ticker !== 'string' || !/^[A-Z][A-Z0-9.]{0,9}$/.test(r.ticker) || typeof r.type !== 'string' || !/^[A-Z]{1,10}$/.test(r.type)) continue;
++    entries.push([r.ticker, { name: cleanText(r.name, 120) ?? r.ticker, type: r.type }]);
++  }
++  let cursor: string | null = null;
++  if (typeof json.next_url === 'string') {
++    try {
++      const u = new URL(json.next_url);
++      // Follow only Massive's own continuation of this listing; take just the cursor (never a key in a URL).
++      if (u.protocol === 'https:' && u.hostname === 'api.massive.com' && u.pathname === TICKER_REFERENCE_PATH) cursor = u.searchParams.get('cursor');
++    } catch { /* unusable next_url: stop paging */ }
++  }
++  return { entries, cursor: cursor && /^[A-Za-z0-9_=-]{1,2000}$/.test(cursor) ? cursor : null };
++}
++
++/** Fetches the active US stock reference, page by page, within `maxPages` and the client's budget. */
++export async function fetchTickerReference(o: { client: HttpClient; clock: () => Date; maxPages: number; minIntervalMs: number; sleep: (ms: number) => Promise<void> }): Promise<TickerReference> {
++  const tickers = new Map<string, TickerRef>();
++  let cursor: string | null = null;
++  let pages = 0;
++  do {
++    if (pages > 0) await o.sleep(o.minIntervalMs);
++    const params: Record<string, string> = { market: 'stocks', active: 'true', limit: '1000', order: 'asc', sort: 'ticker' };
++    if (cursor) params.cursor = cursor;
++    const page = parseTickerPage(await o.client.getJson(TICKER_REFERENCE_PATH, params));
++    for (const [t, ref] of page.entries) tickers.set(t, ref);
++    cursor = page.cursor;
++    pages++;
++  } while (cursor !== null && pages < o.maxPages);
++  return { fetchedAt: o.clock().toISOString(), tickers, complete: cursor === null };
++}
++
++// ---- classification ----------------------------------------------------------------------------
++
++/** Types that are not ordinary shares or funds: never a stock candidate. */
++const EXCLUDED_TYPES: Record<string, string> = {
++  WARRANT: 'warrant', RIGHT: 'right', UNIT: 'unit', PFD: 'preferred share', ADRP: 'preferred depositary receipt',
++  ADRW: 'depositary warrant', ADRR: 'depositary right', BOND: 'bond', SP: 'structured product', BASKET: 'basket',
++  LT: 'liquidating trust', OS: 'other security', GDR: 'global depositary receipt', NYRS: 'New York registry share',
++};
++const ETP_TYPES: Record<string, string> = { ETF: 'ETF', ETN: 'ETN (exchange-traded note)', ETV: 'Exchange-traded vehicle', ETS: 'Single-security ETF', FUND: 'Fund' };
++
++/** Leveraged or inverse by NAME (heuristic): "2X", "3x Long", "Ultra", "UltraPro", "Leveraged", "Inverse", "Bear". */
++export function gearing(name: string): 'leveraged' | 'inverse' | null {
++  const n = name.replace(/[-_]/g, ' ');
++  if (/\binverse\b/i.test(n) || /\bbear\b/i.test(n) || /\bultrashort\b/i.test(n) || /(^|\s)-\s?\d(\.\d+)?\s?x\b/i.test(name)) return 'inverse';
++  // "ProShares Short QQQ" is inverse; "Short-Term Treasury", "Short Duration Bond" are ordinary bond funds.
++  if (/\bshort\b(?!\s+(term|duration|maturity|dated|treasury|bond|income|horizon|vol))/i.test(n) && !/\b(treasury|bond|income|municipal|muni)\b/i.test(n)) return 'inverse';
++  if (/\b[1-9](\.\d+)?\s?x\b/i.test(n) || /\bultra(pro)?\b/i.test(n) || /\bleveraged\b/i.test(n) || /\bdaily\b.*\bbull\b/i.test(n)) return 'leveraged';
++  return null;
++}
++
++export interface Classified { keep: boolean; reason: string | null; security: SecurityInfo; name: string | null }
++
++const NAME_BASIS = 'Massive ticker reference; leveraged/inverse detected from the fund name (heuristic)';
++
++/** Classifies one ticker. Without a reference (not fetched), everything is kept and marked "not checked". */
++export function classifyTicker(ticker: string, ref: TickerReference | null): Classified {
++  if (ref === null) return { keep: true, reason: null, name: null, security: { kind: 'unknown', typeCode: null, label: 'Type not checked', basis: 'ticker reference not available in this run' } };
++  const r = ref.tickers.get(ticker);
++  if (!r) {
++    return { keep: true, reason: null, name: null, security: { kind: 'unknown', typeCode: null, label: 'Type unknown', basis: ref.complete ? 'not in Massive\'s active ticker reference' : 'ticker reference incomplete (page limit)' } };
++  }
++  const basis = 'Massive ticker reference';
++  if (r.type === 'CS') return { keep: true, reason: null, name: r.name, security: { kind: 'common', typeCode: 'CS', label: 'Common stock', basis } };
++  if (r.type === 'ADRC') return { keep: true, reason: null, name: r.name, security: { kind: 'adr', typeCode: 'ADRC', label: 'ADR (depositary receipt)', basis } };
++  if (Object.hasOwn(ETP_TYPES, r.type)) {
++    const g = gearing(r.name);
++    if (g === 'leveraged') return { keep: false, reason: 'leveraged ETF/ETN', name: r.name, security: { kind: 'etf', typeCode: r.type, label: `Leveraged ${ETP_TYPES[r.type]}`, basis: NAME_BASIS } };
++    if (g === 'inverse') return { keep: false, reason: 'inverse ETF/ETN', name: r.name, security: { kind: 'etf', typeCode: r.type, label: `Inverse ${ETP_TYPES[r.type]}`, basis: NAME_BASIS } };
++    return { keep: true, reason: null, name: r.name, security: { kind: 'etf', typeCode: r.type, label: ETP_TYPES[r.type]!, basis: NAME_BASIS } };
++  }
++  const what = EXCLUDED_TYPES[r.type] ?? `security type ${r.type}`;
++  return { keep: false, reason: what, name: r.name, security: { kind: 'unknown', typeCode: r.type, label: what, basis } };
++}
++
++// ---- disk cache --------------------------------------------------------------------------------
++
++export function tickerReferenceDir(env: Record<string, string | undefined>): string | null {
++  const base = env.LOCALAPPDATA ?? env.XDG_CACHE_HOME ?? (env.HOME ? join(env.HOME, '.cache') : undefined);
++  return base ? join(base, 'market-scanner', 'massive-tickers') : null;
++}
++const cacheFile = (dir: string) => join(dir, `${createHash('sha256').update('us-stocks-active').digest('hex').slice(0, 16)}.json`);
++
++/** A fresh cached reference, or null (missing, stale, corrupt or from another version). */
++export function readCachedReference(dir: string, now: Date): TickerReference | null {
++  try {
++    const raw: unknown = JSON.parse(readFileSync(cacheFile(dir), 'utf8'));
++    if (!isRecord(raw) || raw.version !== CACHE_VERSION || typeof raw.fetchedAt !== 'string' || !Array.isArray(raw.tickers) || typeof raw.complete !== 'boolean') return null;
++    const at = Date.parse(raw.fetchedAt);
++    if (Number.isNaN(at) || now.getTime() - at > REFERENCE_MAX_AGE_MS || at > now.getTime() + 60_000) return null;
++    const tickers = new Map<string, TickerRef>();
++    for (const e of raw.tickers) {
++      if (Array.isArray(e) && typeof e[0] === 'string' && typeof e[1] === 'string' && typeof e[2] === 'string') tickers.set(e[0], { name: e[1], type: e[2] });
++    }
++    return tickers.size > 0 ? { fetchedAt: new Date(at).toISOString(), tickers, complete: raw.complete } : null;
++  } catch {
++    return null;
++  }
++}
++
++/** Writes a complete reference (atomic rename). Returns false if it could not be written. */
++export function writeCachedReference(dir: string, ref: TickerReference): boolean {
++  if (!ref.complete) return false; // an incomplete list would hide types for a week
++  try {
++    mkdirSync(dir, { recursive: true });
++    const tmp = `${cacheFile(dir)}.${process.pid}.tmp`;
++    writeFileSync(tmp, JSON.stringify({ version: CACHE_VERSION, fetchedAt: ref.fetchedAt, complete: ref.complete, tickers: [...ref.tickers].map(([t, r]) => [t, r.name, r.type]) }));
++    renameSync(tmp, cacheFile(dir));
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/**
++ * The reference for this run: the cached copy when fresh, else a refresh if the budget leaves room for
++ * `reserve` later requests. Never throws for provider trouble: the scan continues without types.
++ */
++export async function loadTickerReference(o: {
++  client: HttpClient; clock: () => Date; maxCalls: number; reserve: number; cacheDir: string | null;
++  minIntervalMs: number; sleep: (ms: number) => Promise<void>;
++}): Promise<{ ref: TickerReference | null; note: string; requestsUsed: number }> {
++  const now = o.clock();
++  const cached = o.cacheDir ? readCachedReference(o.cacheDir, now) : null;
++  if (cached) return { ref: cached, requestsUsed: 0, note: `Security types: Massive ticker reference from ${cached.fetchedAt.slice(0, 10)} (cached, refreshed weekly; no request made).` };
++  const room = o.maxCalls - o.client.callsMade - o.reserve;
++  if (room < 2) return { ref: null, requestsUsed: 0, note: `Security types were not checked: the request limit leaves no room for the weekly ticker-reference refresh (about 12 requests). ETFs, warrants and units may appear unlabelled; raise "Max API requests" once to refresh it.` };
++  const before = o.client.callsMade;
++  try {
++    const ref = await fetchTickerReference({ client: o.client, clock: o.clock, maxPages: Math.min(REFERENCE_MAX_PAGES, room), minIntervalMs: o.minIntervalMs, sleep: o.sleep });
++    const used = o.client.callsMade - before;
++    const saved = o.cacheDir ? writeCachedReference(o.cacheDir, ref) : false;
++    return {
++      ref, requestsUsed: used,
++      note: `Security types: Massive ticker reference refreshed (${ref.tickers.size.toLocaleString('en-US')} active tickers, ${used} request(s))${ref.complete ? (saved ? '; cached for 7 days' : '; could not be cached') : '; INCOMPLETE (page limit), so some tickers show "type unknown"; not cached'}.`,
++    };
++  } catch (e) {
++    const used = o.client.callsMade - before;
++    if (!(e instanceof HttpError) && !(e instanceof MassiveResponseError)) throw e;
++    return { ref: null, requestsUsed: used, note: `Security types were not checked: the ticker-reference request failed (${e instanceof HttpError ? (e.status ? `HTTP ${e.status}` : e.kind) : 'unusable response'}). ETFs, warrants and units may appear unlabelled.` };
++  }
++}
+diff -ru -x node_modules -N base/src/providers/massive.ts work/src/providers/massive.ts
+--- base/src/providers/massive.ts	2026-10-28 05:58:04.909607181 -0500
++++ work/src/providers/massive.ts	2026-10-28 06:02:21.460767164 -0500
+@@ -58,7 +58,7 @@
+       droppedCurrentSession++;
+       continue;
+     }
+-    bars.push({ date, close: isRecord(r) ? r.c : undefined, volume: isRecord(r) ? r.v : undefined });
++    bars.push({ date, close: isRecord(r) ? r.c : undefined, volume: isRecord(r) ? r.v : undefined, open: isRecord(r) ? r.o : undefined, high: isRecord(r) ? r.h : undefined, low: isRecord(r) ? r.l : undefined });
+   }
+   return { bars, droppedCurrentSession };
+ }
+@@ -168,8 +168,14 @@
+ 
+ export interface MoversResult { tickers: string[]; sessions: string[]; notes: string[]; requestsUsed: number }
+ 
++/**
++ * Optional security check applied BEFORE gainers take a slot (see massive-tickers.ts): returns a
++ * reason to leave the ticker out (warrant, unit, leveraged ETF, ...), or null to keep it.
++ */
++export type SecurityFilter = (ticker: string) => string | null;
++
+ /** Finds the latest two sessions and returns the biggest 1-day gainers within the limits. Never invents data. */
+-export async function fetchMarketMovers(o: { client: HttpClient; clock: () => Date; maxCalls: number; minIntervalMs?: number; sleep?: (ms: number) => Promise<void>; limits?: Partial<typeof MARKET_MOVERS> }): Promise<MoversResult> {
++export async function fetchMarketMovers(o: { client: HttpClient; clock: () => Date; maxCalls: number; minIntervalMs?: number; sleep?: (ms: number) => Promise<void>; limits?: Partial<typeof MARKET_MOVERS>; securityFilter?: SecurityFilter }): Promise<MoversResult> {
+   const L = { ...MARKET_MOVERS, ...o.limits };
+   const sleep = o.sleep ?? realSleep;
+   const start = o.client.callsMade;
+@@ -188,23 +194,38 @@
+     return { tickers: [], sessions: sessions.map((x) => x.date), requestsUsed, notes: [`Market-wide movers: two recent trading sessions were not found within ${requestsUsed} request(s), so the fixed list was used instead.`] };
+   }
+   const [latest, prev] = sessions as [typeof sessions[0], typeof sessions[0]];
+-  const ranked: { t: string; chg: number }[] = [];
++  const ranked: { t: string; chg: number; liquidBefore: boolean }[] = [];
+   let inRange = 0;
++  const leftOut = new Map<string, string[]>(); // reason -> tickers (security check)
+   for (const [t, b] of latest.bars) {
+     if (!PLAIN_TICKER.test(t)) continue;
+     const p = prev.bars.get(t);
+     if (!p || b.close < L.minPrice || b.close > L.maxPrice || b.close * b.volume < L.minDollarVolume) continue;
+     inRange++;
+-    ranked.push({ t, chg: (b.close / p.close - 1) * 100 });
+-  }
+-  ranked.sort((a, b) => b.chg - a.chg);
+-  const top = ranked.filter((r) => r.chg > 0).slice(0, L.count);
++    const chg = (b.close / p.close - 1) * 100;
++    if (chg <= 0) continue;
++    const why = o.securityFilter?.(t) ?? null;
++    if (why !== null) {
++      leftOut.set(why, [...(leftOut.get(why) ?? []), t]);
++      continue;
++    }
++    // Pre-check, no extra request: the scanner later requires a 20-session MEDIAN of $20M+ traded. A stock
++    // that also cleared the floor the session BEFORE its jump is far more likely to pass, so those take
++    // the slots first; one-day spikes fill any slots left. The scanner's own rule is unchanged.
++    ranked.push({ t, chg, liquidBefore: p.close * p.volume >= L.minDollarVolume });
++  }
++  ranked.sort((a, b) => Number(b.liquidBefore) - Number(a.liquidBefore) || b.chg - a.chg);
++  const top = ranked.slice(0, L.count);
++  const spikes = top.filter((r) => !r.liquidBefore).length;
++  const leftOutNote = [...leftOut].map(([why, ts]) => `${why}: ${ts.length} (${ts.slice(0, 6).join(', ')}${ts.length > 6 ? ', ...' : ''})`).join('; ');
+   return {
+     tickers: top.map((r) => r.t),
+     sessions: [latest.date, prev.date],
+     requestsUsed,
+     notes: [
+       `Market-wide movers: ${latest.bars.size.toLocaleString('en-US')} US stocks on ${latest.date} (vs ${prev.date}); ${inRange.toLocaleString('en-US')} were priced $${L.minPrice}-$${L.maxPrice} with at least $${(L.minDollarVolume / 1e6).toFixed(0)}M traded; the ${top.length} biggest gainers were evaluated (${requestsUsed} request(s) for the market summary).`,
++      `Liquidity pre-check: gainers that also traded $${(L.minDollarVolume / 1e6).toFixed(0)}M+ on ${prev.date} were picked first (${top.length - spikes} of ${top.length}); ${spikes} one-day spike(s) filled the remaining slots and are likely to fail the scanner's 20-session liquidity rule.`,
++      ...(leftOutNote ? [`Left out before evaluation: ${leftOutNote}.`] : []),
+       'Gainers are picked by the previous session\'s close-to-close change only; the evaluation below adds the 20-session volume baseline and the usual scoring.',
+     ],
+   };
+diff -ru -x node_modules -N base/src/stocks/command.ts work/src/stocks/command.ts
+--- base/src/stocks/command.ts	2026-10-28 05:58:04.914101817 -0500
++++ work/src/stocks/command.ts	2026-10-28 06:02:21.461338894 -0500
+@@ -5,6 +5,7 @@
+ import { MARKET_MOVERS, MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER, MASSIVE_MIN_INTERVAL_MS, MOVERS_SOURCE, fetchMarketMovers, fetchStockDataset } from '../providers/massive.ts';
+ import type { ScanCommandDeps } from '../scanner/command.ts';
+ import { MISSING_KEY_NEXT_STEP, parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
++import { REFERENCE_MAX_PAGES, classifyTicker, loadTickerReference, tickerReferenceDir } from '../providers/massive-tickers.ts';
+ import { runStockScan } from './analyze.ts';
+ import { normalizeStockDataset } from './normalize.ts';
+ import { renderStockReport, summarizeStockScan } from './render.ts';
+@@ -67,8 +68,9 @@
+     deps.err('--max-requests is only for live scans (--live).');
+     return 1;
+   }
+-  // Movers: 2 market-summary requests (3 around a holiday) plus one per gainer.
+-  let maxRequests = values.movers ? MARKET_MOVERS.count + 3 : STOCK_UNIVERSE.length;
++  // Movers: 2 market-summary requests (3 around a holiday) plus one per gainer, plus room for the weekly
++  // ticker-reference refresh (used only when the cached copy is older than 7 days).
++  let maxRequests = values.movers ? MARKET_MOVERS.count + 3 + REFERENCE_MAX_PAGES : STOCK_UNIVERSE.length;
+   if (values['max-requests'] !== undefined) {
+     const parsed = parseMaxRequests(values['max-requests']);
+     if (parsed === null) {
+@@ -99,7 +101,15 @@
+         const data = await fetchStockDataset({ client, clock: deps.clock, universe: STOCK_UNIVERSE, maxCalls: maxRequests, sleep: deps.sleep });
+         return emit(data, deps.clock());
+       }
+-      const movers = await fetchMarketMovers({ client, clock: deps.clock, maxCalls: maxRequests, sleep: deps.sleep });
++      const pause = (ms: number) => (deps.sleep ?? ((t: number) => new Promise<void>((r) => setTimeout(r, t))))(ms);
++      // Security types first, so warrants, units and leveraged/inverse ETFs never take a gainer slot.
++      const reference = await loadTickerReference({
++        client, clock: deps.clock, maxCalls: maxRequests, reserve: MARKET_MOVERS.count + 3, cacheDir: tickerReferenceDir(deps.env),
++        minIntervalMs: MASSIVE_MIN_INTERVAL_MS, sleep: pause,
++      });
++      if (reference.requestsUsed > 0) await pause(MASSIVE_MIN_INTERVAL_MS);
++      const securityFilter = (t: string) => { const c = classifyTicker(t, reference.ref); return c.keep ? null : c.reason; };
++      const movers = await fetchMarketMovers({ client, clock: deps.clock, maxCalls: maxRequests, sleep: deps.sleep, securityFilter });
+       const useMovers = movers.tickers.length > 0;
+       if (movers.requestsUsed > 0 && client.callsMade < maxRequests) await (deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(MASSIVE_MIN_INTERVAL_MS);
+       const data = await fetchStockDataset({
+@@ -108,7 +118,13 @@
+       });
+       data.dataset.label = useMovers ? 'Massive end-of-day snapshot (market-wide movers)' : data.dataset.label;
+       data.dataset.source = `${MOVERS_SOURCE}; ${data.dataset.source}`;
+-      data.dataset.notes.unshift(...movers.notes);
++      data.dataset.notes.unshift(...movers.notes, reference.note);
++      // Names and security types for display (the scanner's rules and scores do not use them).
++      for (const s of data.stocks) {
++        const c = classifyTicker(s.symbol, reference.ref);
++        if (c.name) s.name = c.name;
++        s.security = c.security;
++      }
+       return emit(data, deps.clock());
+     } catch (e) {
+       // Errors never contain the key; redact here as well, defensively (with and without the prefix).
+diff -ru -x node_modules -N base/src/stocks/normalize.ts work/src/stocks/normalize.ts
+--- base/src/stocks/normalize.ts	2026-10-28 05:58:04.914451711 -0500
++++ work/src/stocks/normalize.ts	2026-10-28 06:00:04.898970086 -0500
+@@ -59,6 +59,10 @@
+         continue;
+       }
+       const bar: Bar = { date: b.date as string, close: b.close as number, volume: b.volume as number };
++      // Day open/high/low are optional and display-only: kept only when all three are valid and consistent.
++      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
++      const o = num(b.open), h = num(b.high), l = num(b.low);
++      if (o !== null && h !== null && l !== null && l <= h && o >= l && o <= h && bar.close >= l && bar.close <= h) Object.assign(bar, { open: o, high: h, low: l });
+       const seen = byDate.get(bar.date);
+       if (seen === undefined) byDate.set(bar.date, bar);
+       else if (seen === null || seen.close !== bar.close || seen.volume !== bar.volume) {
+@@ -72,6 +76,7 @@
+     stocks.push({
+       symbol,
+       name: isText(raw.name) ? raw.name : symbol,
++      ...(d.kind === 'live' && isRecord(raw.security) && isText(raw.security.label) ? { security: raw.security as unknown as StockSnapshot['security'] } : {}),
+       bars,
+       invalidBars,
+       dataKind: d.kind === 'live' ? 'verified_market_data' : 'test_data',
+diff -ru -x node_modules -N base/src/stocks/render.ts work/src/stocks/render.ts
+--- base/src/stocks/render.ts	2026-10-28 05:58:04.914311705 -0500
++++ work/src/stocks/render.ts	2026-10-28 06:05:45.204716178 -0500
+@@ -1,3 +1,4 @@
++import { MARKET_MOVERS } from '../providers/massive.ts';
+ import { KIND_LABEL } from '../core/evidence.ts';
+ import { terminalSafe } from '../core/format.ts';
+ import { nextStepForStop, renderSummary, type ScanSummary, tally } from '../core/summary.ts';
+@@ -22,7 +23,7 @@
+ 
+ const signedPct = (p: number) => `${p > 0 ? '+' : ''}${p.toFixed(1)}%`;
+ const shares = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : `${n}`);
+-const label = (c: StockCandidate) => (c.stock.name === c.stock.symbol ? terminalSafe(c.stock.symbol) : `${terminalSafe(c.stock.name)} (${terminalSafe(c.stock.symbol)})`);
++const label = (c: StockCandidate) => `${c.stock.name === c.stock.symbol ? terminalSafe(c.stock.symbol) : `${terminalSafe(c.stock.name)} (${terminalSafe(c.stock.symbol)})`}${c.stock.security && c.stock.security.kind !== 'common' ? ` [${terminalSafe(c.stock.security.label)}]` : ''}`;
+ const dataLine = (c: StockCandidate) => `Catalyst: NOT VERIFIED | Data: session ${c.metrics.lastDate}, end of day [${KIND_LABEL[c.stock.dataKind]}]`;
+ 
+ function renderCandidate(c: StockCandidate, i: number): string[] {
+@@ -54,7 +55,7 @@
+     mode: live ? 'live' : 'offline',
+     data: live ? 'live Massive end-of-day bars (latest completed session; no intraday data)' : 'synthetic fixture (TEST DATA), not market data',
+     source: r.dataset.source,
+-    scope: live ? (/market-wide movers/.test(r.dataset.label) ? `${r.universe} market-wide gainers priced $5-$50 (previous session)` : `${r.universe} tickers in the fixed initial universe`) : `${r.universe} tickers in the fixture`,
++    scope: live ? (/market-wide movers/.test(r.dataset.label) ? `${r.universe} market-wide gainers priced $${MARKET_MOVERS.minPrice}-$${MARKET_MOVERS.maxPrice} (previous session)` : `${r.universe} tickers in the fixed initial universe`) : `${r.universe} tickers in the fixture`,
+     status: partialReasons.length > 0 ? 'partial' : 'complete',
+     partialReasons,
+     counts: {
+diff -ru -x node_modules -N base/src/stocks/types.ts work/src/stocks/types.ts
+--- base/src/stocks/types.ts	2026-10-28 05:58:04.914391048 -0500
++++ work/src/stocks/types.ts	2026-10-28 06:00:04.898783121 -0500
+@@ -6,12 +6,18 @@
+   date: unknown;
+   close: unknown;
+   volume: unknown;
++  /** Optional day open, high and low (display-only warnings; never scored). */
++  open?: unknown;
++  high?: unknown;
++  low?: unknown;
+ }
+ 
+ /** Provider-neutral input for one stock. */
+ export interface RawStock {
+   symbol: string;
+   name?: string;
++  /** Live only: the security type from the provider's ticker reference (see massive-tickers.ts). */
++  security?: SecurityInfo;
+   /** Daily bars, any order; completed sessions only. */
+   bars?: RawBar[] | null;
+   /** Live only: why this stock has no bars (the request failed, or was never sent). */
+@@ -36,11 +42,29 @@
+   date: string;
+   close: number;
+   volume: number;
++  /** Day open, high and low when the source gave consistent values (low <= open, close <= high); else absent. */
++  open?: number;
++  high?: number;
++  low?: number;
++}
++
++/** What kind of security a ticker is, from the provider's reference data (or unknown). */
++export interface SecurityInfo {
++  /** common stock, depositary receipt, exchange-traded product, or not checked. */
++  kind: 'common' | 'adr' | 'etf' | 'unknown';
++  /** The provider's type code (CS, ADRC, ETF, ETN, ...), or null when not checked. */
++  typeCode: string | null;
++  /** Short label for display, e.g. "Common stock", "ETF". */
++  label: string;
++  /** Where the type came from. */
++  basis: string;
+ }
+ 
+ export interface StockSnapshot {
+   symbol: string;
+   name: string;
++  /** Security type, when known (live market-wide scans). */
++  security?: SecurityInfo;
+   /** Valid bars, oldest first, one per session date. */
+   bars: Bar[];
+   /** Bars that were malformed, or conflicting duplicates of a date; counted, never used. */
+diff -ru -x node_modules -N base/src/tracking/journal.ts work/src/tracking/journal.ts
+--- base/src/tracking/journal.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/src/tracking/journal.ts	2026-10-28 06:08:05.945712376 -0500
+@@ -0,0 +1,193 @@
++/**
++ * Candidate journal: did the scanner find opportunities early?
++ *
++ * After every LIVE scan, the evaluated rows are saved as one JSON file on this computer (never test
++ * data, never sent anywhere). A "candidate" is a row the scanner qualified (Mover or Watchlist). Its
++ * outcome after 1, 3 and 7 days is measured from LATER scans that observed the same asset again, so
++ * measuring costs no extra request. An asset that no later scan observed stays "not measured yet":
++ * nothing is estimated or filled in.
++ *
++ * Limits, stated with every result: only assets a later scan saw can be measured (crypto: the top 500
++ * by market cap, usually; stocks: only if the asset is among a later day's gainers), the price is the
++ * scan's price (crypto: CoinGecko's last update; stocks: the session close), and past results do not
++ * predict future ones.
++ */
++
++import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
++import { join } from 'node:path';
++
++export const JOURNAL_VERSION = 1;
++export const JOURNAL_KEEP_DAYS = 180;
++export const HORIZONS = [1, 3, 7] as const;
++const DAY = 86_400_000;
++
++export interface Observation {
++  key: string;
++  symbol: string;
++  name: string;
++  /** Price and when it applied (ISO). */
++  price: number;
++  priceAt: string;
++  /** Short-period change at the time (crypto 24h, stocks 1d), or null. */
++  changePct: number | null;
++  status: 'qualified' | 'over_display_limit' | 'below_threshold' | 'no_pattern';
++  category: 'Mover' | 'Watchlist' | null;
++  score: number | null;
++  maxScore: number | null;
++}
++export interface ScanRecord { version: number; market: 'crypto' | 'stocks'; scannedAt: string; observations: Observation[] }
++
++/** The minimal row shape the journal reads (a DashboardRow satisfies it). */
++export interface RowLike {
++  key: string; market: 'crypto' | 'stocks'; symbol: string; name: string; unitPrice: number | null; priceAsOf: string | null;
++  dataKind: string; change: { short: { value: number | null } };
++  signal: { status: Observation['status']; category: Observation['category']; score: number | null; maxScore: number | null };
++}
++
++export function journalDir(env: Record<string, string | undefined>): string | null {
++  const base = env.LOCALAPPDATA ?? env.XDG_CACHE_HOME ?? (env.HOME ? join(env.HOME, '.cache') : undefined);
++  return base ? join(base, 'market-scanner', 'candidate-journal') : null;
++}
++
++/** A price time: crypto keeps its ISO time; a stock session date means that day's 4 pm New York close (21:00 UTC). */
++function priceTime(asOf: string | null): string | null {
++  if (!asOf) return null;
++  const iso = /^\d{4}-\d{2}-\d{2}$/.test(asOf) ? `${asOf}T21:00:00Z` : asOf;
++  const t = Date.parse(iso);
++  return Number.isNaN(t) ? null : new Date(t).toISOString();
++}
++
++export function observationsFrom(rows: readonly RowLike[]): Observation[] {
++  const out: Observation[] = [];
++  for (const r of rows) {
++    const at = priceTime(r.priceAsOf);
++    if (r.dataKind === 'test_data' || r.unitPrice === null || !(r.unitPrice > 0) || at === null) continue;
++    out.push({ key: r.key, symbol: r.symbol, name: r.name, price: r.unitPrice, priceAt: at, changePct: r.change.short.value,
++      status: r.signal.status, category: r.signal.category, score: r.signal.score, maxScore: r.signal.maxScore });
++  }
++  return out;
++}
++
++/** Saves one live scan (atomic write). Returns false when nothing was saved; never throws. */
++export function recordScan(dir: string, market: 'crypto' | 'stocks', scannedAt: Date, rows: readonly RowLike[]): boolean {
++  const observations = observationsFrom(rows);
++  if (observations.length === 0) return false;
++  try {
++    mkdirSync(dir, { recursive: true });
++    const name = `${market}-${scannedAt.toISOString().replace(/[:.]/g, '-')}.json`;
++    const tmp = join(dir, `${name}.${process.pid}.tmp`);
++    writeFileSync(tmp, JSON.stringify({ version: JOURNAL_VERSION, market, scannedAt: scannedAt.toISOString(), observations } satisfies ScanRecord));
++    renameSync(tmp, join(dir, name));
++    pruneJournal(dir, scannedAt);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function pruneJournal(dir: string, now: Date) {
++  for (const f of readdirSync(dir)) {
++    const m = /^(crypto|stocks)-(\d{4}-\d{2}-\d{2})T/.exec(f);
++    if (m && now.getTime() - Date.parse(`${m[2]}T00:00:00Z`) > JOURNAL_KEEP_DAYS * DAY) {
++      try { unlinkSync(join(dir, f)); } catch { /* best effort */ }
++    }
++  }
++}
++
++const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
++
++/** Every readable scan record, oldest first. Corrupt or foreign files are skipped. */
++export function loadJournal(dir: string): ScanRecord[] {
++  let files: string[];
++  try { files = readdirSync(dir).filter((f) => /^(crypto|stocks)-.*\.json$/.test(f)); } catch { return []; }
++  const out: ScanRecord[] = [];
++  for (const f of files) {
++    try {
++      const r: unknown = JSON.parse(readFileSync(join(dir, f), 'utf8'));
++      if (!isRecord(r) || r.version !== JOURNAL_VERSION || (r.market !== 'crypto' && r.market !== 'stocks') || typeof r.scannedAt !== 'string' || !Array.isArray(r.observations)) continue;
++      const obs = (r.observations as unknown[]).filter((o): o is Observation => isRecord(o) && typeof o.key === 'string' && typeof o.price === 'number' && o.price > 0 && typeof o.priceAt === 'string' && !Number.isNaN(Date.parse(o.priceAt)));
++      out.push({ version: JOURNAL_VERSION, market: r.market, scannedAt: r.scannedAt, observations: obs });
++    } catch { /* skip */ }
++  }
++  return out.sort((a, b) => (a.scannedAt < b.scannedAt ? -1 : 1));
++}
++
++// ---- outcomes ------------------------------------------------------------------------------------
++
++export interface CandidateOutcome {
++  key: string; market: 'crypto' | 'stocks'; symbol: string; name: string;
++  category: 'Mover' | 'Watchlist'; score: number | null; maxScore: number | null;
++  /** When it was FIRST flagged, at what price, and its move at that time. */
++  flaggedAt: string; price: number; changeAtFlag: number | null;
++  /** % change to the first later observation in each window, or null when not observed. */
++  after: Record<(typeof HORIZONS)[number], number | null>;
++  /** Times it was flagged again later. */
++  reflagged: number;
++}
++export interface HorizonStat { horizon: number; measured: number; up: number; medianPct: number | null; meanPct: number | null }
++export interface TrackRecord {
++  candidates: number;
++  /** Flagged long enough ago for at least the 1-day window to be possible. */
++  old: number;
++  stats: HorizonStat[];
++  byCategory: { category: 'Mover' | 'Watchlist'; stats: HorizonStat[] }[];
++  recent: CandidateOutcome[];
++  scans: number;
++  firstScan: string | null;
++  notes: string[];
++}
++
++/** A later observation counts for horizon H when taken between H - 0.2 days and 1.6 x H + 1 days after the flag. */
++const inWindow = (dtDays: number, h: number) => dtDays >= h - 0.2 && dtDays <= h * 1.6 + 1;
++
++export function outcomes(records: readonly ScanRecord[], market?: 'crypto' | 'stocks'): CandidateOutcome[] {
++  const recs = records.filter((r) => !market || r.market === market);
++  const first = new Map<string, CandidateOutcome & { t0: number }>();
++  for (const rec of recs) {
++    for (const o of rec.observations) {
++      if (o.status !== 'qualified' || !o.category) continue;
++      const k = `${rec.market}|${o.key}`;
++      const seen = first.get(k);
++      if (seen) { if (Date.parse(o.priceAt) > seen.t0 + 0.5 * DAY) seen.reflagged++; continue; }
++      first.set(k, { key: o.key, market: rec.market, symbol: o.symbol, name: o.name, category: o.category, score: o.score, maxScore: o.maxScore,
++        flaggedAt: o.priceAt, price: o.price, changeAtFlag: o.changePct, after: { 1: null, 3: null, 7: null }, reflagged: 0, t0: Date.parse(o.priceAt) });
++    }
++  }
++  for (const c of first.values()) {
++    for (const h of HORIZONS) {
++      for (const rec of recs) {
++        if (rec.market !== c.market) continue;
++        const o = rec.observations.find((x) => x.key === c.key);
++        if (!o) continue;
++        const dt = (Date.parse(o.priceAt) - c.t0) / DAY;
++        if (inWindow(dt, h)) { c.after[h] = (o.price / c.price - 1) * 100; break; }
++      }
++    }
++  }
++  return [...first.values()].map(({ t0: _t, ...c }) => c).sort((a, b) => (a.flaggedAt < b.flaggedAt ? 1 : -1));
++}
++
++const median = (v: number[]) => { if (!v.length) return null; const s = [...v].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2; };
++function stats(list: CandidateOutcome[]): HorizonStat[] {
++  return HORIZONS.map((h) => {
++    const v = list.map((c) => c.after[h]).filter((x): x is number => x !== null);
++    return { horizon: h, measured: v.length, up: v.filter((x) => x > 0).length, medianPct: median(v), meanPct: v.length ? v.reduce((a, b) => a + b, 0) / v.length : null };
++  });
++}
++
++export function trackRecord(records: readonly ScanRecord[], now: Date, market?: 'crypto' | 'stocks', recentLimit = 12): TrackRecord {
++  const list = outcomes(records, market);
++  const recs = records.filter((r) => !market || r.market === market);
++  const old = list.filter((c) => now.getTime() - Date.parse(c.flaggedAt) >= 0.8 * DAY).length;
++  const unmeasured = list.filter((c) => now.getTime() - Date.parse(c.flaggedAt) >= 1.6 * DAY && HORIZONS.every((h) => c.after[h] === null)).length;
++  const notes = [
++    'Measured from the price when a candidate was first flagged to the first later scan that saw it in each window (1 day: 0.8-2.6 days later; 3 days: 2.8-5.8; 7 days: 6.8-12.2). No extra requests; nothing is estimated.',
++    'Only assets a later scan observed can be measured: crypto usually (top 500), stocks only if the stock is among a later day\'s gainers. Past results do not predict future moves.',
++  ];
++  if (unmeasured) notes.push(`${unmeasured} older candidate(s) were never observed again by a later scan, so they cannot be measured.`);
++  return {
++    candidates: list.length, old, stats: stats(list),
++    byCategory: (['Mover', 'Watchlist'] as const).map((category) => ({ category, stats: stats(list.filter((c) => c.category === category)) })),
++    recent: list.slice(0, recentLimit), scans: recs.length, firstScan: recs[0]?.scannedAt ?? null, notes,
++  };
++}
+diff -ru -x node_modules -N base/src/web/brief.ts work/src/web/brief.ts
+--- base/src/web/brief.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/src/web/brief.ts	2026-10-28 06:19:33.654194476 -0500
+@@ -0,0 +1,69 @@
++/**
++ * One compact summary per dashboard row: why it is listed, how good the evidence is, the key risk,
++ * and the next step. Built only from values the scan already has; no request, no new scoring.
++ *
++ * The research dimensions are kept SEPARATE and never blended into one number:
++ * - market confirmation: the scanner's own signal (category, score, volume multiple), unchanged;
++ * - evidence quality: whether the data behind that signal is complete and real (this module);
++ * - catalyst: only from the news panel, after the user opens it (not here);
++ * - attention: only from the optional CoinGecko trending check (not here).
++ * Nothing here claims buying, sentiment or social coverage.
++ */
++
++import type { LeadExplanation } from '../scanner/lead-quality.ts';
++import type { DashboardRow } from './rows.ts';
++
++export type EvidenceLevel = 'test_data' | 'limited' | 'single_source';
++export interface RowBrief {
++  /** Why it is listed, or null for assets that matched no pattern. */
++  reason: string | null;
++  evidence: { level: EvidenceLevel; text: string };
++  keyRisk: string | null;
++  next: string;
++}
++
++const pct = (n: number) => `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
++const times = (n: number | null) => (n === null ? '' : ` (about ${n.toFixed(1)}× its usual level)`);
++
++/** The data-source wording per market (the only source behind the signal). */
++export const SOURCE = { crypto: 'CoinGecko', stocks: 'Massive' } as const;
++
++function stockReason(row: DashboardRow): string | null {
++  const ch = row.change.short.value;
++  if (row.signal.category === 'Mover') return `The price moved ${ch === null ? 'sharply' : pct(ch)} in the last session with higher-than-usual trading${times(row.volumeMultiple)}.`;
++  if (row.signal.category === 'Watchlist') return `Trading was unusually high${times(row.volumeMultiple)}, but the price moved little.`;
++  return null;
++}
++
++export function rowBrief(row: DashboardRow, lead?: { explanation?: LeadExplanation } | null): RowBrief {
++  const x = lead?.explanation ?? null;
++  const dataWarn = x?.warnings.find((w) => w.group === 'data_quality') ?? null;
++  const volWarn = x?.warnings.find((w) => w.group === 'volatility') ?? null;
++  const reason = x?.reason ?? (row.market === 'stocks' ? stockReason(row) : null);
++
++  let evidence: RowBrief['evidence'];
++  if (row.dataKind === 'test_data') evidence = { level: 'test_data', text: 'Invented values for trying the dashboard.' };
++  else if (dataWarn) evidence = { level: 'limited', text: dataWarn.text };
++  else if (row.market === 'stocks' && (!row.security || row.security.kind === 'unknown')) evidence = { level: 'limited', text: 'Security type not confirmed (it may not be an ordinary stock).' };
++  else evidence = { level: 'single_source', text: `Complete ${SOURCE[row.market]} market data; one source, not independently confirmed.` };
++
++  // Volatility first, then the scanner's own weaker-evidence caution (e.g. only volume stands out).
++  const keyRisk = volWarn?.text ?? row.risk.flags[0] ?? x?.warnings.find((w) => w.group === 'evidence')?.text ?? null;
++
++  let next: string;
++  if (evidence.level === 'test_data') next = 'Run a live scan for real data.';
++  else if (evidence.level === 'limited') next = 'Treat as unconfirmed: check the next scan or a second source before drawing any conclusion.';
++  else if (row.signal.category === 'Watchlist') next = 'Check the news for a catalyst; watch whether the price follows the trading activity.';
++  else if (row.signal.category === 'Mover') next = 'Check the news for a catalyst, then a second source, before drawing any conclusion.';
++  else next = 'No signal: nothing to act on from this scan.';
++  return { reason, evidence, keyRisk, next };
++}
++
++/** Adds a brief to every row; crypto rows use the scan's lead explanations (by coin id) when present. */
++export function withBriefs<R extends DashboardRow>(rows: R[], result: { discovery?: { highPriority?: unknown[]; watchlist?: unknown[] } }): (R & { brief: RowBrief })[] {
++  const leads = new Map<string, { explanation?: LeadExplanation }>();
++  for (const e of [...(result.discovery?.highPriority ?? []), ...(result.discovery?.watchlist ?? [])] as { id?: unknown; explanation?: LeadExplanation }[]) {
++    if (typeof e?.id === 'string') leads.set(e.id, e);
++  }
++  return rows.map((r) => ({ ...r, brief: rowBrief(r, r.market === 'crypto' ? leads.get(r.id) : null) }));
++}
+diff -ru -x node_modules -N base/src/web/crypto-search.ts work/src/web/crypto-search.ts
+--- base/src/web/crypto-search.ts	2026-10-28 05:58:04.908530142 -0500
++++ work/src/web/crypto-search.ts	2026-10-28 06:15:02.142008688 -0500
+@@ -19,7 +19,7 @@
+ import { readFileSync } from 'node:fs';
+ import { has, type Evidence } from '../core/evidence.ts';
+ import { COINGECKO_ATTRIBUTION, COINGECKO_DEMO_BASE_URL, COINGECKO_KEY_ENV, COINGECKO_KEY_HEADER, ProviderResponseError, parseMarkets } from '../providers/coingecko.ts';
+-import { COIN_ID_PATTERN, type SearchCoin, fetchCoinMarket, fetchCoinSearch, parseSearchCoins } from '../providers/coingecko-search.ts';
++import { COIN_ID_PATTERN, type SearchCoin, type TrendingCoin, fetchCoinMarket, fetchCoinSearch, fetchTrending, parseSearchCoins, parseTrending } from '../providers/coingecko-search.ts';
+ import { type CoinProfile, fetchCoinProfile, parseCoinProfile } from '../providers/coingecko-profile.ts';
+ import { HttpError, type FetchLike, createHttpClient } from '../providers/http.ts';
+ import { forecastsFor } from './forecasts.ts';
+@@ -38,6 +38,10 @@
+ export const LIVE_MIN_INTERVAL_MS = 2_000;
+ export const SESSION_REQUEST_LIMIT = 100;
+ export const BUNDLED_CRYPTO_SEARCH_FIXTURE = new URL('../../test/fixtures/crypto-search.synthetic.json', import.meta.url);
++export const TRENDING_CACHE_TTL_MS = 30 * 60_000;
++export const TRENDING_SOURCE = 'CoinGecko Demo API /search/trending (top coins by CoinGecko user searches, last 24 hours)';
++/** Shown with every attention result: what it is and what it is not. */
++export const TRENDING_MEANING = 'Search interest on CoinGecko only (its top trending coins by user searches in the last 24 hours). It is not social-media coverage, not sentiment and not evidence of buying.';
+ export const SEARCH_SOURCE = 'CoinGecko Demo API /search (all coins CoinGecko lists, sorted by market cap)';
+ export const ASSET_SOURCE = 'CoinGecko Demo API /coins/markets (USD)';
+ 
+@@ -110,7 +114,7 @@
+ }
+ 
+ /** Validates a search or lookup body. */
+-export function validateSearchBody(body: string, kind: 'search' | 'asset' | 'profile'): { mode: Mode; value: string; refresh: boolean; confirmLive: boolean } | { error: string } {
++export function validateSearchBody(body: string, kind: 'search' | 'asset' | 'profile' | 'trending'): { mode: Mode; value: string; refresh: boolean; confirmLive: boolean } | { error: string } {
+   if (body.length > 1024) return { error: 'Request body too large.' };
+   let d: unknown;
+   try {
+@@ -121,6 +125,7 @@
+   if (typeof d !== 'object' || d === null) return { error: 'Request body must be a JSON object.' };
+   const r = d as Record<string, unknown>;
+   if (r.mode !== 'offline' && r.mode !== 'live') return { error: 'mode must be "offline" or "live".' };
++  if (kind === 'trending') return { mode: r.mode, value: '', refresh: r.refresh === true, confirmLive: r.confirmLive === true };
+   const value = kind === 'search' ? normalizeQuery(r.query) : (typeof r.id === 'string' && COIN_ID_PATTERN.test(r.id) ? r.id : null);
+   if (value === null) {
+     return { error: kind === 'search' ? 'Enter 2 to 50 characters: letters, digits, spaces, or . _ - ( ).' : 'id must be a CoinGecko coin id from the search results.' };
+@@ -132,12 +137,13 @@
+   const searchCache = new Map<string, { at: number; coins: SearchCoin[]; skipped: number }>();
+   const assetCache = new Map<string, { at: number; raw: RawAsset[] }>();
+   const profileCache = new Map<string, { at: number; profile: CoinProfile }>();
++  let trendingCache: { at: number; coins: TrendingCoin[]; skipped: number } | undefined;
+   let busy = false;
+   let lastLiveAt = -Infinity;
+   let used = 0;
+   const minInterval = opts.minIntervalMs ?? LIVE_MIN_INTERVAL_MS;
+   const limit = opts.sessionLimit ?? SESSION_REQUEST_LIMIT;
+-  let fixtureCache: { asOf: string; search: unknown; markets: unknown } | undefined;
++  let fixtureCache: { asOf: string; search: unknown; markets: unknown; trending?: unknown } | undefined;
+   const fixture = () => (fixtureCache ??= JSON.parse(readFileSync(opts.fixture ?? BUNDLED_CRYPTO_SEARCH_FIXTURE, 'utf8')));
+   const reply = (status: number, data: Record<string, unknown>): Reply => ({ status, data: { ok: status === 200, ...data } });
+   const session = () => ({ liveRequestsThisSession: used, sessionRequestLimit: limit });
+@@ -202,6 +208,23 @@
+       searchCache.set(cacheKey, { at: now, coins: r.value.coins, skipped: r.value.skipped });
+       return reply(200, { ...base, fetchedAt: new Date(now).toISOString(), fromCache: false, requestsUsed: r.calls, skipped: r.value.skipped, ...rankResults(r.value.coins, query), ...session() });
+     },
++    /** Attention check: CoinGecko trending, one request on confirmation, cached for 30 minutes. */
++    async trending(mode: Mode, refresh: boolean, confirmLive: boolean): Promise<Reply> {
++      if (mode === 'offline') {
++        const f = fixture() as { asOf: string; trending?: unknown };
++        const parsed = parseTrending(f.trending);
++        return reply(200, { mode, dataKind: 'test_data', source: 'Synthetic trending fixture (TEST DATA, invented coins)', meaning: TRENDING_MEANING, fetchedAt: f.asOf, fromCache: false, requestsUsed: 0, ...parsed, ...session() });
++      }
++      const now = deps.clock().getTime();
++      const base = { mode, dataKind: 'verified_market_data', source: TRENDING_SOURCE, meaning: TRENDING_MEANING, attribution: COINGECKO_ATTRIBUTION };
++      if (trendingCache && now - trendingCache.at < TRENDING_CACHE_TTL_MS && !refresh) {
++        return reply(200, { ...base, fetchedAt: new Date(trendingCache.at).toISOString(), fromCache: true, requestsUsed: 0, coins: trendingCache.coins, skipped: trendingCache.skipped, ...session() });
++      }
++      const r = await live(confirmLive, (client) => fetchTrending(client));
++      if (!('value' in r)) return r;
++      trendingCache = { at: now, ...r.value };
++      return reply(200, { ...base, fetchedAt: new Date(now).toISOString(), fromCache: false, requestsUsed: r.calls, ...r.value, ...session() });
++    },
+     async asset(mode: Mode, id: string, refresh: boolean, confirmLive: boolean): Promise<Reply> {
+       const noData = 'CoinGecko returned no market data for this coin (it may be inactive, newly listed, or not tracked for prices).';
+       if (mode === 'offline') {
+diff -ru -x node_modules -N base/src/web/public/app.js work/src/web/public/app.js
+--- base/src/web/public/app.js	2026-10-28 05:58:04.908116124 -0500
++++ work/src/web/public/app.js	2026-10-28 06:18:57.422945825 -0500
+@@ -4,10 +4,10 @@
+ import { coverageFigures, coverageSentences, dashboardWording, exclusionBreakdown, leadCrossCheckWarnings, outlookView, plainCheck, profileContext, supplyText } from '/simple-view.js';
+ 
+ const $ = (id) => document.getElementById(id);
+-const state = { status: null, running: false, lastRequest: null, last: null, news: new Map(), wtb: new Map(), cmc: null };
++const state = { status: null, running: false, lastRequest: null, last: null, news: new Map(), wtb: new Map(), cmc: null, attention: null };
+ const MARKET = {
+   crypto: { button: 'Scan Crypto', blurb: 'Movers and watchlist candidates from the CoinGecko top 500, using the existing scanner rules.', keyFlag: 'cryptoKeyConfigured', keyEnv: 'COINGECKO_DEMO_API_KEY', provider: 'CoinGecko', pace: 'about 0.7 s apart' },
+-  stocks: { button: 'Scan US Stocks', blurb: 'Live: the previous session\'s biggest gainers across all US stocks priced $5-$50, checked with the scanner rules (end-of-day data; about 17 requests, 3-4 minutes). Offline: a fixed test list.', keyFlag: 'stocksKeyConfigured', keyEnv: 'POLYGON_API_KEY', provider: 'Massive', pace: 'about 12.5 s apart (free plan: 5 per minute)' },
++  stocks: { button: 'Scan US Stocks', blurb: 'Live: the previous session\'s biggest gainers across all US stocks priced $5-$50 (ordinary stocks, ADRs and labelled ETFs; leveraged and inverse ETFs, warrants and units left out), checked with the scanner rules. End-of-day data; about 17 requests (3-4 minutes), plus about 12 once a week to refresh stock types. Offline: a fixed test list.', keyFlag: 'stocksKeyConfigured', keyEnv: 'POLYGON_API_KEY', provider: 'Massive', pace: 'about 12.5 s apart (free plan: 5 per minute)' },
+ };
+ 
+ function el(tag, attrs = {}, ...children) {
+@@ -128,6 +128,7 @@
+       state.news = new Map(); // news panels belong to one scan
+       state.wtb = new Map(); // so do "where to buy" panels
+       state.cmc = null; // so does a cross-check
++      state.attention = null; // and an attention check
+       render();
+       $('rerun-btn').hidden = false;
+     }
+@@ -167,8 +168,14 @@
+ 
+ const STATUS_LABEL = { qualified: 'Qualified', over_display_limit: 'Qualified (over display limit)', below_threshold: 'Below threshold', no_pattern: 'No signal pattern' };
+ 
+-function classificationCell(c) {
+-  if (!c) return el('span', { class: 'muted' }, 'US stock (fixed list)');
++function classificationCell(c, row) {
++  if (!c) {
++    // Stocks: the security type from Massive's ticker reference (live market-wide scans), when known.
++    const sec = row?.security;
++    return sec
++      ? el('div', {}, el('span', { class: `chip ${sec.kind === 'etf' ? 'watch' : 'cat'}` }, sec.label), el('div', { class: 'sym' }, sec.basis))
++      : el('span', { class: 'muted' }, 'Security type not checked');
++  }
+   const basis = { provider: 'provider data', curated_list: 'curated list', heuristic: 'heuristic', none: 'no reliable evidence' }[c.basis];
+   return el('div', {},
+     el('span', { class: `chip ${c.category === 'unknown' ? 'dim' : 'cat'}` }, c.label),
+@@ -187,6 +194,7 @@
+     lines.push(`Volume baseline: ${v.insufficient ? `not measured (${v.validDays} valid days)` : `${v.highlyVariable ? 'HIGHLY VARIABLE' : 'stable'} (Q3/Q1 ${v.iqrRatio.toFixed(1)}x)`}`);
+   } else {
+     lines.push(`Session ${r.sessionDate}; ${usd(r.dollarVolume)} traded`);
++    if (r.dayRangePct !== null && r.dayRangePct !== undefined) lines.push(`Day's range: ${r.dayRangePct.toFixed(1)}%; close vs day's high: ${pct(r.fromDayHighPct)}${r.gapPct !== null ? `; open vs previous close: ${pct(r.gapPct)}` : ''}`);
+   }
+   return el('div', { class: 'risk' },
+     ...lines.map((l) => el('div', {}, l)),
+@@ -194,11 +202,38 @@
+     el('details', {}, el('summary', {}, 'Period and limits'), el('ul', {}, el('li', {}, `Period: ${r.period}`), ...r.unavailable.map((u) => el('li', {}, `Not available: ${u}`)))));
+ }
+ 
++// ---- compact row summary --------------------------------------------------------------------------
++// Why it is listed, evidence quality, key risk, attention (only after the optional check) and the
++// next step, from the server's row brief (src/web/brief.ts). Every caution stays in the row's
++// "Cautions, category & volatility" details; the market signal stays in the Signal column.
++
++const EVIDENCE_LABEL = { test_data: 'Test data', limited: 'Limited', single_source: 'One source' };
++
++function attentionText(row) {
++  const d = state.attention?.data;
++  if (row.market !== 'crypto' || !d) return null;
++  const hit = d.coins.find((c) => c.id === row.id);
++  return hit ? `#${hit.trendRank} of ${d.coins.length} on CoinGecko's trending searches (24h)` : `not among CoinGecko's ${d.coins.length} trending searches`;
++}
++
++function briefView(row) {
++  const b = row.brief;
++  if (!b) return null;
++  const att = attentionText(row);
++  return el('div', { class: 'brief' },
++    b.reason ? el('div', { class: 'brief-reason' }, b.reason) : null,
++    el('div', {}, el('span', { class: `ev ev-${b.evidence.level}` }, `Evidence: ${EVIDENCE_LABEL[b.evidence.level]}`), ' ', el('span', { class: 'sym' }, b.evidence.text)),
++    b.keyRisk ? el('div', { class: 'brief-risk' }, `Key risk: ${b.keyRisk}`) : null,
++    att ? el('div', { class: 'sym' }, `Attention: ${att}`) : null,
++    el('div', { class: 'brief-next' }, `Next: ${b.next}`));
++}
++
+ function rowView({ row, afford }) {
+   const fit = afford.passesBudget && afford.passesUnitPrice;
+   return el('tr', {},
+-    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : row.symbol),
+-      ...(state.leadById?.has(row.id) ? leadNotes(state.leadById.get(row.id)) : [])),
++    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : [row.name === row.symbol ? null : row.symbol, row.security?.label].filter(Boolean).join(' · ') || row.symbol),
++      briefView(row),
++      ...(state.leadById?.has(row.id) ? leadNotes(state.leadById.get(row.id)).slice(row.brief ? 1 : 0) : [])),
+     el('td', {}, el('span', { class: `chip ${row.signal.category === 'Mover' ? 'mover' : row.signal.category === 'Watchlist' ? 'watch' : 'dim'}` }, row.signal.category ?? STATUS_LABEL[row.signal.status]),
+       el('div', { class: 'sym' }, [row.signal.category ? STATUS_LABEL[row.signal.status] : null, row.signal.score === null ? null : `score ${row.signal.score}/${row.signal.maxScore}`, row.volumeMultiple === null ? null : `${row.volumeMultiple.toFixed(2)}x volume`].filter(Boolean).join(' · '))),
+     el('td', { class: 'num' }, price(row.unitPrice)),
+@@ -210,8 +245,8 @@
+     el('td', { class: 'row-actions' },
+       el('div', { class: 'action-line' }, newsButton(row), wtbButton(row), snapshotButton(row)),
+       row.why.length ? el('details', {}, el('summary', {}, 'Why'), el('ul', {}, ...row.why.map((w) => el('li', {}, w)))) : null,
+-      el('details', {}, el('summary', {}, 'Category & volatility'),
+-        el('div', { class: 'more' }, classificationCell(row.classification), riskCell(row),
++      el('details', {}, el('summary', {}, 'Cautions, category & volatility'),
++        el('div', { class: 'more' }, ...(row.brief && state.leadById?.has(row.id) ? leadNotes(state.leadById.get(row.id)).slice(0, 1) : []), classificationCell(row.classification, row), riskCell(row),
+           ...row.warnings.filter((w) => !row.risk.flags.includes(w)).map((w) => el('div', { class: 'sym' }, w)),
+           el('div', { class: 'sym' }, `Price as of ${when(row.priceAsOf)}`)))));
+ }
+@@ -358,6 +393,39 @@
+   return el('tr', { class: 'news-row' }, el('td', { colspan: '6' }, body));
+ }
+ 
++// ---- track record (candidate journal) -------------------------------------------------------------
++// From the server's journal of earlier LIVE scans on this computer; no request is made. One line on the
++// page; the numbers behind it are folded.
++
++function horizonText(st) {
++  if (!st.measured) return `after ${st.horizon}d: not measured yet`;
++  return `after ${st.horizon}d: ${st.up} of ${st.measured} up (median ${pct(st.medianPct)})`;
++}
++
++function trackRecordView(tr, market) {
++  if (!tr) return null;
++  const label = market === 'stocks' ? 'stock' : 'crypto';
++  if (!tr.candidates) {
++    return el('p', { class: 'kv' }, el('b', {}, 'Track record: '), `starts with your first live ${label} scan. Each candidate is checked 1, 3 and 7 days later against later scans, at no extra request.`);
++  }
++  const three = tr.stats.find((x) => x.horizon === 3);
++  const lead = three && three.measured ? horizonText(three) : horizonText(tr.stats[0]);
++  const row = (c) => el('tr', {},
++    el('td', {}, el('div', { class: 'name' }, c.symbol), el('div', { class: 'sym' }, c.name)),
++    el('td', {}, when(c.flaggedAt)),
++    el('td', {}, `${c.category}${c.score !== null ? ` ${c.score}/${c.maxScore}` : ''}`),
++    el('td', { class: 'num' }, price(c.price)),
++    ...[1, 3, 7].map((h) => el('td', { class: `num ${signClass(c.after[h])}` }, c.after[h] === null ? '—' : pct(c.after[h]))));
++  return el('div', { class: 'kv' },
++    el('b', {}, 'Track record: '), `${tr.candidates} ${label} candidate(s) flagged by your live scans since ${when(tr.firstScan)}; ${lead}.`,
++    el('details', {}, el('summary', {}, 'How earlier candidates did'),
++      el('ul', { class: 'notes' }, ...[{ category: 'All', stats: tr.stats }, ...tr.byCategory].map((g) => el('li', {}, `${g.category}: ${g.stats.map(horizonText).join('; ')}`))),
++      tr.recent.length ? el('div', { class: 'table-wrap' }, el('table', {},
++        el('thead', {}, el('tr', {}, ...['Asset', 'First flagged', 'Signal', 'Price then', '1 day', '3 days', '7 days'].map((h) => el('th', {}, h)))),
++        el('tbody', {}, ...tr.recent.map(row)))) : null,
++      el('ul', { class: 'notes' }, ...tr.notes.map((n) => el('li', {}, n)))));
++}
++
+ // ---- save to the Asset Snapshot Log ----------------------------------------------------------------
+ // Opens your Snapshot Log (a claude.ai page) with this row's numbers in the link, so its form is
+ // pre-filled and you only click Save there. Nothing is sent anywhere else and no API request is made.
+@@ -585,6 +653,7 @@
+       el('li', {}, `${c.withActivity} asset(s) showed snapshot activity; ${c.withActivityNotEvaluated} of them could not be evaluated for lack of reliable data.`),
+       ...notes.map((n) => el('li', {}, n)))));
+   box.append(cmcView());
++  box.append(attentionView());
+   return box;
+ }
+ 
+@@ -646,6 +715,57 @@
+     x.match.status === 'matched' ? cmcAttribution(attribution, true) : null);
+ }
+ 
++async function loadAttention(refresh = false) {
++  const mode = state.last?.mode === 'live' ? 'live' : 'offline';
++  state.attention = { loading: true, data: state.attention?.data ?? null, error: null };
++  render();
++  const send = (extra) => fetch('/api/crypto/trending', {
++    method: 'POST',
++    headers: { 'content-type': 'application/json', 'x-market-scanner': '1', accept: 'application/json' },
++    body: JSON.stringify({ mode, refresh, ...extra }),
++  }).then(async (r) => [r, await r.json()]);
++  try {
++    let [r, data] = await send({});
++    if (r.status === 428 && data.needsConfirm) {
++      if (!window.confirm(`Check CoinGecko's trending searches?\n\nThis sends 1 CoinGecko request (Demo plan: 100 per minute). The answer is cached for 30 minutes.\n\nLive search requests this session: ${data.liveRequestsThisSession} of ${data.sessionRequestLimit}.`)) {
++        state.attention = { loading: false, data: state.attention?.data ?? null, error: null };
++        return render();
++      }
++      [r, data] = await send({ confirmLive: true });
++    }
++    state.attention = data.ok ? { loading: false, data, error: null } : { loading: false, data: state.attention?.data ?? null, error: data.error || `The attention check failed (HTTP ${r.status}).` };
++  } catch {
++    state.attention = { loading: false, data: state.attention?.data ?? null, error: 'Could not reach the local server.' };
++  }
++  render();
++}
++
++function attentionView() {
++  const box = el('div', { class: 'cmc' }, el('h4', {}, 'Attention: CoinGecko trending searches'),
++    el('p', { class: 'muted small' }, 'Optional and separate from the scanner\'s score: shows which coins are among CoinGecko\'s most-searched in the last 24 hours, and marks them in the table. Search interest on one site only: not social media, not sentiment, not buying. Offline uses test data; live sends 1 CoinGecko request after you confirm (cached 30 minutes).'));
++  const a = state.attention;
++  const b = el('button', { type: 'button', class: 'secondary' }, a?.data ? 'Check again' : 'Check trending searches');
++  b.disabled = Boolean(a?.loading);
++  b.addEventListener('click', () => loadAttention(Boolean(a?.data && a.data.mode === 'live')));
++  box.append(b);
++  if (a?.loading) box.append(el('div', { class: 'running' }, el('span', { class: 'spinner' }), 'Checking…'));
++  if (a?.error) box.append(el('div', { class: 'error' }, a.error));
++  const d = a?.data;
++  if (d) {
++    if (d.dataKind === 'test_data') box.append(el('div', { class: 'banner test' }, 'TEST DATA: synthetic trending list with invented coins. NOT market data.'));
++    const inScan = new Set((state.last?.rows ?? []).map((r) => r.id));
++    const label = (c) => `#${c.trendRank} ${c.symbol}${c.marketCapRank ? ` (market-cap rank ${c.marketCapRank})` : ''}`;
++    const hits = d.coins.filter((c) => inScan.has(c.id));
++    const others = d.coins.filter((c) => !inScan.has(c.id));
++    box.append(el('p', { class: 'kv' }, `${hits.length} of ${d.coins.length} trending coin(s) are in this scan${hits.length ? `: ${hits.map(label).join(', ')}` : ''}.`));
++    if (others.length) box.append(el('p', { class: 'sym' }, `Trending but not in this scan (not evaluated; search them above): ${others.map(label).join(', ')}.`));
++    box.append(el('ul', { class: 'notes' },
++      el('li', {}, d.meaning),
++      el('li', {}, `Source: ${d.source}. Fetched ${when(d.fetchedAt)}${d.fromCache ? ' (cached in memory; no request made)' : ''}; requests used: ${d.requestsUsed}.`)));
++  }
++  return box;
++}
++
+ function cmcView() {
+   const box = el('div', { class: 'cmc' }, el('h4', {}, 'Second source: CoinMarketCap'),
+     el('p', { class: 'muted small' }, 'Cross-checks the scan\'s research leads (the coins in the table with a signal, plus those that moved but were not checked): price, market cap, category tags. Runs only when you click. Offline scans use test data; a live scan sends 1 CoinMarketCap request (about 2 credits) after you confirm.'));
+@@ -703,6 +823,8 @@
+     cov ? `history ${cov.historyFetched} of ${cov.historyEligible}` : null,
+     cov ? `${cov.requestsUsed} of ${cov.requestLimit} API requests used` : synthetic ? '0 API requests (offline)' : null,
+   ].filter(Boolean).join(' · ')));
++  const tr = trackRecordView(data.trackRecord, data.market);
++  if (tr) root.append(tr);
+   // Send the top movers of the main table to the Snapshot Log in one go (to check them on your phone).
+   const top = view ? [...view.sections[0].rows].filter((x) => x.row.dataKind !== 'test_data')
+     .sort((a, b) => Math.abs(b.row.change.short.value ?? 0) - Math.abs(a.row.change.short.value ?? 0)).slice(0, SEND_TOP).map((x) => x.row) : [];
+diff -ru -x node_modules -N base/src/web/public/styles.css work/src/web/public/styles.css
+--- base/src/web/public/styles.css	2026-10-28 05:58:04.907851584 -0500
++++ work/src/web/public/styles.css	2026-10-28 06:16:22.352161058 -0500
+@@ -192,3 +192,13 @@
+ .profile-table td { border: 0; padding: 3px 8px 3px 0; vertical-align: top; }
+ .profile-table td.pl { color: var(--muted); white-space: nowrap; width: 1%; }
+ .outlook { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border); }
++
++/* Compact row summary (reason, evidence quality, key risk, next step). */
++td.asset .brief { margin-top: 6px; font-size: 12px; line-height: 1.4; white-space: normal; max-width: 34ch; }
++td.asset .brief > div { margin: 2px 0; }
++.brief .brief-reason { color: var(--muted, inherit); }
++.brief .brief-risk { color: var(--warn); }
++.brief .brief-next { font-style: italic; }
++.brief .ev { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; font-weight: 600; border: 1px solid currentColor; }
++.brief .ev-limited, .brief .ev-test_data { color: var(--warn); }
++.brief .ev-single_source { opacity: 0.85; }
+diff -ru -x node_modules -N base/src/web/rows.ts work/src/web/rows.ts
+--- base/src/web/rows.ts	2026-10-28 05:58:04.908420991 -0500
++++ work/src/web/rows.ts	2026-10-28 06:05:45.202798088 -0500
+@@ -21,10 +21,23 @@
+   change5dPct: number | null;
+   sessionDate: string;
+   dollarVolume: number;
++  /** (high - low) / low x 100 for the latest session, CALCULATED from its bar; null without high/low. */
++  dayRangePct: number | null;
++  /** (close - high) / high x 100 (<= 0): how far the close ended below the day's high; null without high. */
++  fromDayHighPct: number | null;
++  /** (open - previous close) / previous close x 100; null without an open. */
++  gapPct: number | null;
+   flags: string[];
+   unavailable: string[];
+ }
+ 
++/**
++ * Display-only stock cautions from the latest daily bar (never scored; scanner thresholds are in
++ * src/stocks/rules.ts and are unchanged). Chosen for end-of-day stock bars: a 10% fade from the high
++ * or a 15% day range is unusual for a liquid US stock; an 8% opening gap often partly fills.
++ */
++export const STOCK_RISK_FLAGS = { fadeFromHighPct: 10, dayRangePct: 15, gapPct: 8 };
++
+ export interface DashboardRow {
+   key: string;
+   market: 'crypto' | 'stocks';
+@@ -47,6 +60,8 @@
+   warnings: string[];
+   /** The score breakdown ("why"), empty for assets that matched no pattern. */
+   why: string[];
++  /** Stocks: security type from the provider's ticker reference, when known (display only). */
++  security?: { label: string; basis: string; kind: string };
+   /** The observed move, for the news panel ("Why it may be moving"); null without a usable time. */
+   move: MoveContext | null;
+ }
+@@ -113,13 +128,26 @@
+   return rows;
+ }
+ 
+-function stockRisk(m: StockMetrics): StockRisk {
++function stockRisk(s: StockSnapshot, m: StockMetrics): StockRisk {
++  const last = s.bars.at(-1);
++  const prev = s.bars.at(-2);
++  const hl = last && last.high !== undefined && last.low !== undefined ? { h: last.high, l: last.low } : null;
++  const dayRangePct = hl ? (hl.h - hl.l) / hl.l * 100 : null;
++  const fromDayHighPct = hl ? (m.close - hl.h) / hl.h * 100 : null;
++  const gapPct = last?.open !== undefined && prev ? (last.open / prev.close - 1) * 100 : null;
++  const F = STOCK_RISK_FLAGS;
++  const flags: string[] = [];
++  if (fromDayHighPct !== null && -fromDayHighPct >= F.fadeFromHighPct) flags.push(`Closed ${(-fromDayHighPct).toFixed(1)}% below the day's high: much of the session's gain faded.`);
++  if (dayRangePct !== null && dayRangePct >= F.dayRangePct) flags.push(`The day's range was ${dayRangePct.toFixed(1)}% (low to high): a very volatile session.`);
++  if (gapPct !== null && Math.abs(gapPct) >= F.gapPct) flags.push(`Opened ${Math.abs(gapPct).toFixed(1)}% ${gapPct > 0 ? 'above' : 'below'} the previous close (a gap); gaps often partly fill.`);
+   return {
+     period: 'latest completed session (end of day) and the 5 sessions before it',
+     change1dPct: m.change1dPct, change5dPct: m.change5dPct, sessionDate: m.lastDate, dollarVolume: m.dollarVolume,
+-    flags: [],
++    dayRangePct, fromDayHighPct, gapPct,
++    flags,
+     unavailable: [
+-      'intraday high-to-low range and drawdown from the session high: the scanner keeps only daily closes (the provider bars include high and low, not parsed yet)',
++      ...(hl ? [] : ['the day\'s open, high and low: not in this data (offline test data, or the provider omitted them)']),
++      'the intraday price path: end-of-day bars only',
+       'bid/ask spread: not in end-of-day bars',
+     ],
+   };
+@@ -139,7 +167,8 @@
+       volumeUsd: m.dollarVolume,
+       change: { short: { label: '1d', value: m.change1dPct }, long: { label: '5d', value: m.change5dPct } },
+       classification: null,
+-      risk: stockRisk(m),
++      ...(s.security ? { security: { label: s.security.label, basis: s.security.basis, kind: s.security.kind } } : {}),
++      risk: stockRisk(s, m),
+       warnings: c?.risks ?? [],
+       why: c ? c.breakdown.map((p) => `${p.rule} ${p.points}/${p.max}: ${p.detail}`) : [],
+       move: stockMove(s, m),
+@@ -159,7 +188,7 @@
+     'Volatility uses CoinGecko\'s rolling 24h high and low, 7-day change and all-time high. There is no intraday price series and no bid/ask spread.',
+   ],
+   stocks: [
+-    'Prices are the latest end-of-day close, not a live quote. Intraday range is not shown yet (the bars\' high and low are not parsed).',
+-    'No asset-category classification for stocks; all are from the fixed list of large US stocks.',
++    'Prices are the latest end-of-day close, not a live quote. The day\'s open, high and low come from the same end-of-day bar; there is no intraday price path.',
++    'Security types (common stock, ADR, ETF) come from Massive\'s ticker reference in live market-wide scans, refreshed weekly. Leveraged and inverse ETFs are recognised by fund name (a heuristic) and left out. The offline test list has no types.',
+   ],
+ };
+diff -ru -x node_modules -N base/src/web/server.ts work/src/web/server.ts
+--- base/src/web/server.ts	2026-10-28 05:58:04.908629202 -0500
++++ work/src/web/server.ts	2026-10-28 06:15:02.142951647 -0500
+@@ -25,6 +25,8 @@
+ import { createCryptoSearchService, validateSearchBody } from './crypto-search.ts';
+ import { type LastScan, NEWS_DEFAULT_LIMIT, NEWS_MAX_LIMIT, createNewsService, validateNewsRequest } from './news.ts';
+ import { createWhereToBuyService, validateWtbRequest } from './where-to-buy.ts';
++import { withBriefs } from './brief.ts';
++import { journalDir, loadJournal, recordScan, trackRecord } from '../tracking/journal.ts';
+ 
+ export const WEB_HOST = '127.0.0.1';
+ export const WEB_DEFAULT_PORT = 4173;
+@@ -76,7 +78,7 @@
+ /** "Where to buy" for one row of the last scan, fetched only when the user opens its panel. */
+ const WTB_ROUTES: Record<string, Market> = { '/api/where-to-buy/crypto': 'crypto', '/api/where-to-buy/stocks': 'stocks' };
+ /** Crypto asset search (any CoinGecko coin) and one-asset lookup; separate from scans. */
+-const SEARCH_ROUTES: Record<string, 'search' | 'asset' | 'profile'> = { '/api/crypto/search': 'search', '/api/crypto/asset': 'asset', '/api/crypto/profile': 'profile' };
++const SEARCH_ROUTES: Record<string, 'search' | 'asset' | 'profile' | 'trending'> = { '/api/crypto/search': 'search', '/api/crypto/asset': 'asset', '/api/crypto/profile': 'profile', '/api/crypto/trending': 'trending' };
+ /** CoinMarketCap cross-check of the last crypto scan's research leads (user-triggered). */
+ const CMC_ROUTE = '/api/crypto/cmc-check';
+ 
+@@ -118,11 +120,17 @@
+         if (exitCode !== 0) return json(exitCode === 1 ? 422 : 500, { ok: false, market, mode, error: stderr || 'The scan failed without a message.', startedAt });
+         const result = JSON.parse(stdout);
+         // Rows for the budget view, built from the result only; the report's own exclusion labels.
+-        const rows = market === 'crypto' ? cryptoRows(result, new Date(result.evaluatedAt)) : stockRows(result);
++        const rows = withBriefs(market === 'crypto' ? cryptoRows(result, new Date(result.evaluatedAt)) : stockRows(result), result);
+         last[market] = { mode, rows, evaluatedAt: result.evaluatedAt, ...(market === 'crypto' ? { discovery: result.discovery } : {}) };
++        // Candidate journal (this computer only): live scans are saved; the track record comes from
++        // earlier live scans and costs no request. Offline (test data) scans are never saved.
++        const dir = journalDir(deps.env);
++        if (dir && mode === 'live') recordScan(dir, market, new Date(result.evaluatedAt), rows);
++        const record = dir ? trackRecord(loadJournal(dir), deps.clock(), market) : null;
+         return json(200, {
+           ok: true, market, mode, maxRequests: mode === 'live' ? maxRequests : null, startedAt, result,
+           rows,
++          trackRecord: record,
+           exclusionLabels: market === 'crypto' ? EXCLUSION_LABEL : STOCK_EXCLUSION_LABEL,
+           limitations: LIMITATIONS[market],
+         });
+@@ -201,7 +209,8 @@
+       const s = validateSearchBody(req.body, kind);
+       if ('error' in s) return json(400, { ok: false, error: s.error });
+       try {
+-        const r = kind === 'search' ? await service.search.search(s.mode, s.value, s.refresh, s.confirmLive)
++        const r = kind === 'trending' ? await service.search.trending(s.mode, s.refresh, s.confirmLive)
++          : kind === 'search' ? await service.search.search(s.mode, s.value, s.refresh, s.confirmLive)
+           : kind === 'profile' ? await service.search.profile(s.mode, s.value, s.refresh, s.confirmLive)
+             : await service.search.asset(s.mode, s.value, s.refresh, s.confirmLive);
+         return { ...json(r.status, r.data), body: redactSecrets(JSON.stringify(r.data), env) };
+diff -ru -x node_modules -N base/test/attention-brief.test.ts work/test/attention-brief.test.ts
+--- base/test/attention-brief.test.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/test/attention-brief.test.ts	2026-10-28 06:19:33.654685222 -0500
+@@ -0,0 +1,75 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import type { FetchLike } from '../src/providers/http.ts';
++import { parseTrending } from '../src/providers/coingecko-search.ts';
++import { rowBrief } from '../src/web/brief.ts';
++import type { DashboardRow } from '../src/web/rows.ts';
++import { WEB_HOST, createScanService, handleRequest } from '../src/web/server.ts';
++
++globalThis.fetch = (() => {
++  throw new Error('Network access is not allowed in tests.');
++}) as typeof fetch;
++
++const KEY = 'TEST-TREND-KEY-not-real-7070';
++const PORT = 4173;
++const NOW = new Date('2026-10-21T12:00:00Z');
++const H = { host: `${WEB_HOST}:${PORT}`, 'content-type': 'application/json', 'x-market-scanner': '1' };
++const post = (path: string, body: unknown) => ({ method: 'POST', url: path, headers: H, body: JSON.stringify(body) });
++
++// SYNTHETIC trending payload in the documented shape.
++const TRENDING = { coins: [{ item: { id: 'syn-a', name: 'Syn A', symbol: 'sa', market_cap_rank: 12 } }, { item: { id: 'syn-b', name: 'Syn B', symbol: 'sb' } }, { nope: 1 }], nfts: [], categories: [] };
++
++test('parseTrending keeps CoinGecko order as the trend rank; malformed entries are skipped and counted', () => {
++  const r = parseTrending(TRENDING);
++  assert.deepEqual(r.coins.map((c) => [c.id, c.symbol, c.trendRank, c.marketCapRank]), [['syn-a', 'SA', 1, 12], ['syn-b', 'SB', 2, null]]);
++  assert.equal(r.skipped, 1);
++  assert.throws(() => parseTrending({ coins: 'x' }));
++});
++
++test('attention check: offline uses the fixture with no request; live needs confirmation, sends 1 request, then is cached', async () => {
++  const urls: string[] = [];
++  const fetch: FetchLike = async (url) => { urls.push(url); return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(TRENDING) }; };
++  const env = { COINGECKO_DEMO_API_KEY: KEY };
++  const svc = createScanService({ env, fetch, clock: () => NOW, sleep: async () => {} }, 160);
++  const off = JSON.parse((await handleRequest(post('/api/crypto/trending', { mode: 'offline' }), svc, env, PORT)).body);
++  assert.equal(off.dataKind, 'test_data');
++  assert.deepEqual(off.coins.map((c: { id: string }) => c.id), ['syn-echo', 'syn-outside', 'syn-alpha', 'syn-newcomer']);
++  assert.match(off.meaning, /not social-media coverage, not sentiment and not evidence of buying/);
++  assert.equal(urls.length, 0);
++  const ask = await handleRequest(post('/api/crypto/trending', { mode: 'live' }), svc, env, PORT);
++  assert.equal(ask.status, 428);
++  assert.equal(urls.length, 0);
++  const live = await handleRequest(post('/api/crypto/trending', { mode: 'live', confirmLive: true }), svc, env, PORT);
++  assert.equal(live.status, 200, live.body);
++  assert.deepEqual(urls, ['https://api.coingecko.com/api/v3/search/trending']);
++  assert.ok(!live.body.includes(KEY) && !urls[0]!.includes(KEY));
++  const cached = JSON.parse((await handleRequest(post('/api/crypto/trending', { mode: 'live' }), svc, env, PORT)).body);
++  assert.equal(cached.fromCache, true);
++  assert.equal(urls.length, 1);
++});
++
++const base = (over: Partial<DashboardRow>): DashboardRow => ({
++  key: 'stocks:SYN', market: 'stocks', name: 'SYN', symbol: 'SYN', id: 'SYN', unitPrice: 10, priceAsOf: '2026-10-20', priceBasis: '', dataKind: 'verified_market_data',
++  signal: { status: 'qualified', category: 'Mover', score: 6, maxScore: 8, order: 0 }, volumeMultiple: 3, volumeUsd: 1e8,
++  change: { short: { label: '1d', value: 9 }, long: { label: '20d', value: 12 } }, classification: null,
++  risk: { flags: ['Closed 12.0% below the day\'s high: much of the session\'s gain faded.'] } as DashboardRow['risk'],
++  warnings: [], why: [], security: { label: 'Common stock', basis: 'Massive ticker reference', kind: 'common' }, move: null, ...over,
++});
++
++test('row brief: separate evidence quality, key risk and next step, from existing values only', () => {
++  const s = rowBrief(base({}));
++  assert.match(s.reason!, /moved \+9\.0% in the last session.*about 3\.0× its usual level/);
++  assert.equal(s.evidence.level, 'single_source');
++  assert.match(s.evidence.text, /one source, not independently confirmed/);
++  assert.match(s.keyRisk!, /below the day's high/);
++  assert.match(s.next, /news for a catalyst/);
++  assert.equal(rowBrief(base({ security: undefined })).evidence.level, 'limited');
++  assert.equal(rowBrief(base({ dataKind: 'test_data' })).evidence.level, 'test_data');
++  const crypto = rowBrief(base({ market: 'crypto' }), { explanation: { reason: 'R', nextStep: null, warnings: [
++    { code: 'stale_data', group: 'data_quality', text: 'Its market data is out of date.' }, { code: 'extreme_spike', group: 'volatility', text: 'Spike.' }] } });
++  assert.deepEqual([crypto.reason, crypto.evidence.level, crypto.evidence.text, crypto.keyRisk], ['R', 'limited', 'Its market data is out of date.', 'Spike.']);
++  const weak = rowBrief(base({ market: 'crypto', risk: { flags: [] } as unknown as DashboardRow['risk'] }), { explanation: { reason: 'R', nextStep: null, warnings: [{ code: 'one_signal', group: 'evidence', text: 'Only trading activity stands out.' }] } });
++  assert.equal(weak.keyRisk, 'Only trading activity stands out.');
++  const none = rowBrief(base({ signal: { status: 'no_pattern', category: null, score: null, maxScore: null, order: 0 }, risk: { flags: [] } as unknown as DashboardRow['risk'] }));
++  assert.deepEqual([none.reason, none.keyRisk], [null, null]);
++});
+diff -ru -x node_modules -N base/test/cmc-lead-warnings.test.ts work/test/cmc-lead-warnings.test.ts
+--- base/test/cmc-lead-warnings.test.ts	2026-10-28 05:58:04.918944354 -0500
++++ work/test/cmc-lead-warnings.test.ts	2026-10-28 06:18:57.423555122 -0500
+@@ -125,6 +125,9 @@
+   // Only crypto leads get them: in the table via the lead map (empty without discovery) and in the
+   // not-checked list. Stock results carry no discovery, so stock rows never show them.
+   assert.match(app, /state\.leadById = new Map\(r\.discovery \? \[\.\.\.r\.discovery\.highPriority, \.\.\.r\.discovery\.watchlist\]\.map\(\(e\) => \[e\.id, e\]\) : \[\]\);/);
+-  assert.match(app, /\.\.\.\(state\.leadById\?\.has\(row\.id\) \? leadNotes\(state\.leadById\.get\(row\.id\)\) : \[\]\)/);
++  // Table rows: the compact brief shows under the name with the second-source warnings; the scan's own
++  // cautions fold into the row's details (rows without a brief keep both under the name).
++  assert.match(app, /\.\.\.\(state\.leadById\?\.has\(row\.id\) \? leadNotes\(state\.leadById\.get\(row\.id\)\)\.slice\(row\.brief \? 1 : 0\) : \[\]\)/);
++  assert.match(app, /\.\.\.\(row\.brief && state\.leadById\?\.has\(row\.id\) \? leadNotes\(state\.leadById\.get\(row\.id\)\)\.slice\(0, 1\) : \[\]\)/);
+   assert.match(app, /if \(r\.discovery\) root\.append\(discoveryView\(r\.discovery, coverage\.length > 0\)\)/);
+ });
+diff -ru -x node_modules -N base/test/fixtures/crypto-search.synthetic.json work/test/fixtures/crypto-search.synthetic.json
+--- base/test/fixtures/crypto-search.synthetic.json	2026-10-28 05:58:04.917936334 -0500
++++ work/test/fixtures/crypto-search.synthetic.json	2026-10-28 06:15:07.912126904 -0500
+@@ -19,5 +19,15 @@
+     { "id": "syn-outside", "symbol": "sout", "name": "Synthetic Outsider", "current_price": 0.0437, "market_cap": 21000000, "market_cap_rank": 612, "total_volume": 1900000, "high_24h": 0.046, "low_24h": 0.041, "price_change_percentage_24h": 6.3, "price_change_percentage_7d_in_currency": 2.2, "last_updated": "2026-10-21T11:55:00.000Z" },
+     { "id": "syn-alpha-classic", "symbol": "salp", "name": "Synthetic Alpha Classic", "current_price": 0.0021, "market_cap": 640000, "market_cap_rank": 1880, "total_volume": 15000, "high_24h": 0.0023, "low_24h": 0.002, "price_change_percentage_24h": -3.1, "price_change_percentage_7d_in_currency": null, "last_updated": "2026-10-21T10:40:00.000Z" },
+     { "id": "syn-alpha-bridged", "symbol": "salp", "name": "Synthetic Alpha (Bridged)", "current_price": null, "market_cap": 0, "market_cap_rank": null, "total_volume": null, "high_24h": null, "low_24h": null, "price_change_percentage_24h": null, "price_change_percentage_7d_in_currency": null, "last_updated": null }
+-  ]
++  ],
++  "trending": {
++    "_comment": "TEST DATA: /search/trending response shape (coins[].item), invented coins. The fourth entry is malformed on purpose.",
++    "coins": [
++      { "item": { "id": "syn-echo", "coin_id": 9001, "name": "Synthetic Echo", "symbol": "SECH", "market_cap_rank": 160, "score": 0 } },
++      { "item": { "id": "syn-outside", "coin_id": 9002, "name": "Synthetic Outside", "symbol": "SOUT", "market_cap_rank": 2400, "score": 1 } },
++      { "item": { "id": "syn-alpha", "coin_id": 9003, "name": "Synthetic Alpha", "symbol": "SALP", "market_cap_rank": 41, "score": 2 } },
++      { "item": { "id": "BAD ID", "name": "Broken", "symbol": "BRK" } },
++      { "item": { "id": "syn-newcomer", "coin_id": 9005, "name": "Synthetic Newcomer", "symbol": "SNEW", "market_cap_rank": null, "score": 4 } }
++    ]
++  }
+ }
+diff -ru -x node_modules -N base/test/journal.test.ts work/test/journal.test.ts
+--- base/test/journal.test.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/test/journal.test.ts	2026-10-28 06:09:26.429644316 -0500
+@@ -0,0 +1,60 @@
++import assert from 'node:assert/strict';
++import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { test } from 'node:test';
++import { type RowLike, loadJournal, observationsFrom, outcomes, recordScan, trackRecord } from '../src/tracking/journal.ts';
++
++globalThis.fetch = (() => {
++  throw new Error('Network access is not allowed in tests.');
++}) as typeof fetch;
++
++// SYNTHETIC rows: invented coins and prices.
++const row = (key: string, priceVal: number, at: string, status: RowLike['signal']['status'] = 'no_pattern', category: RowLike['signal']['category'] = null, dataKind = 'verified_market_data'): RowLike => ({
++  key, market: 'crypto', symbol: key.split(':')[1]!.toUpperCase(), name: `Test ${key}`, unitPrice: priceVal, priceAsOf: at, dataKind,
++  change: { short: { value: 5 } }, signal: { status, category, score: category ? 6 : null, maxScore: category ? 8 : null },
++});
++const T = (d: number, h = 12) => new Date(Date.UTC(2026, 9, d, h)).toISOString();
++
++test('only live data is recorded; test data and unusable prices are not', () => {
++  assert.equal(observationsFrom([row('crypto:a', 1, T(1), 'qualified', 'Mover', 'test_data'), row('crypto:b', 0, T(1)), { ...row('crypto:c', 2, T(1)), priceAsOf: null }]).length, 0);
++  const dir = mkdtempSync(join(tmpdir(), 'journal-'));
++  try {
++    assert.equal(recordScan(dir, 'crypto', new Date(T(1)), [row('crypto:a', 1, T(1), 'qualified', 'Mover', 'test_data')]), false);
++    assert.equal(readdirSync(dir).length, 0);
++  } finally {
++    rmSync(dir, { recursive: true, force: true });
++  }
++});
++
++test('outcomes: measured from the first flag to the first later observation in each window; nothing estimated', () => {
++  const dir = mkdtempSync(join(tmpdir(), 'journal-'));
++  try {
++    recordScan(dir, 'crypto', new Date(T(1)), [row('crypto:up', 1.0, T(1), 'qualified', 'Mover'), row('crypto:gone', 2.0, T(1), 'qualified', 'Watchlist'), row('crypto:other', 5, T(1))]);
++    recordScan(dir, 'crypto', new Date(T(2)), [row('crypto:up', 1.1, T(2), 'qualified', 'Mover')]); // +1 day, flagged again
++    recordScan(dir, 'crypto', new Date(T(4)), [row('crypto:up', 1.3, T(4))]); // +3 days
++    recordScan(dir, 'crypto', new Date(T(20)), [row('crypto:up', 0.5, T(20))]); // +19 days: outside the 7-day window (6.8-12.2)
++    writeFileSync(join(dir, 'crypto-broken.json'), '{nope');
++    const recs = loadJournal(dir);
++    assert.equal(recs.length, 4);
++    const list = outcomes(recs);
++    const up = list.find((c) => c.key === 'crypto:up')!;
++    assert.deepEqual([up.after[1]?.toFixed(1), up.after[3]?.toFixed(1), up.after[7]], ['10.0', '30.0', null]);
++    assert.equal(up.reflagged, 1);
++    const gone = list.find((c) => c.key === 'crypto:gone')!;
++    assert.deepEqual(gone.after, { 1: null, 3: null, 7: null });
++    assert.equal(list.some((c) => c.key === 'crypto:other'), false); // never qualified: not a candidate
++    const tr = trackRecord(recs, new Date(T(21)), 'crypto');
++    assert.equal(tr.candidates, 2);
++    assert.deepEqual(tr.stats.map((s) => [s.horizon, s.measured, s.up]), [[1, 1, 1], [3, 1, 1], [7, 0, 0]]);
++    assert.ok(tr.notes.some((n) => /1 older candidate\(s\) were never observed again/.test(n)));
++    assert.equal(trackRecord(recs, new Date(T(21)), 'stocks').candidates, 0);
++  } finally {
++    rmSync(dir, { recursive: true, force: true });
++  }
++});
++
++test('stock session dates are placed at the 4 pm New York close', () => {
++  const [o] = observationsFrom([{ ...row('stocks:abc', 10, '2026-10-23', 'qualified', 'Mover'), market: 'stocks' }]);
++  assert.equal(o!.priceAt, '2026-10-23T21:00:00.000Z');
++});
+diff -ru -x node_modules -N base/test/massive.test.ts work/test/massive.test.ts
+--- base/test/massive.test.ts	2026-10-28 05:58:04.915303795 -0500
++++ work/test/massive.test.ts	2026-10-28 06:01:02.539878856 -0500
+@@ -49,7 +49,9 @@
+ 
+ test('parseDailyBars: session dates come from the start-of-window timestamp in New York time', () => {
+   const { bars, droppedCurrentSession } = parseDailyBars({ status: 'OK', results: [bar('2026-10-19', 10, 5), bar('2026-10-20', 11, 6)] }, NOW);
+-  assert.deepEqual(bars, [{ date: '2026-10-19', close: 10, volume: 5 }, { date: '2026-10-20', close: 11, volume: 6 }]);
++  assert.deepEqual(bars.map((b) => ({ date: b.date, close: b.close, volume: b.volume })), [{ date: '2026-10-19', close: 10, volume: 5 }, { date: '2026-10-20', close: 11, volume: 6 }]);
++  // The day's open, high and low are passed through for the normalizer to validate (display-only).
++  assert.deepEqual([bars[0]!.open, bars[0]!.high, bars[0]!.low], [10, 10, 10]);
+   assert.equal(droppedCurrentSession, 0);
+   assert.deepEqual(parseDailyBars({ status: 'OK', resultsCount: 0 }, NOW).bars, []); // no results: no bars, nothing invented
+   assert.throws(() => parseDailyBars([], NOW), MassiveResponseError);
+diff -ru -x node_modules -N base/test/rules-locked.test.ts work/test/rules-locked.test.ts
+--- base/test/rules-locked.test.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/test/rules-locked.test.ts	2026-10-28 05:59:12.815141223 -0500
+@@ -0,0 +1,47 @@
++// Locks the scanners' scoring rules and the fixture scan results, so a change to any threshold or
++// score is deliberate: it must update this file in the same change, with a stated reason.
++// Recorded 2026-10-28 from the project as it stood (commit 4f4883f).
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { test } from 'node:test';
++import { SCAN_RULES } from '../src/scanner/rules.ts';
++import { runStockScan } from '../src/stocks/analyze.ts';
++import { normalizeStockDataset } from '../src/stocks/normalize.ts';
++import { STOCK_RULES, STOCK_SCORE_TABLE } from '../src/stocks/rules.ts';
++
++globalThis.fetch = (() => {
++  throw new Error('Network access is not allowed in tests.');
++}) as typeof fetch;
++
++test('stock rules and score tables are unchanged', () => {
++  assert.deepEqual({ ...STOCK_RULES }, {
++    baselineSessions: 20, minBaselineSessions: 15, maxGapDays: 5, maxSessionAgeDays: 4, minPrice: 5, minMedianDollarVolume: 20_000_000,
++    maxRelativeVolume: 50, moverMinAbsMovePct: 4, moverMinRelVolume: 1.5, watchMaxAbsMovePct: 2, watchMinRelVolume: 2, moverMinScore: 4,
++    watchMinScore: 3, maxMovers: 5, maxWatchlist: 3, extremeRelVolume: 10,
++  });
++  assert.deepEqual(JSON.parse(JSON.stringify(STOCK_SCORE_TABLE)), {
++    relativeVolume: [[3, 3], [2, 2], [1.5, 1]], moveAbsPct: [[8, 2], [4, 1]], dollarVolume: [[1_000_000_000, 2], [200_000_000, 1]], trendAgreement: 1,
++  });
++});
++
++test('crypto scan rules are unchanged', () => {
++  assert.deepEqual({ ...SCAN_RULES }, {
++    minMarketCap: 100_000_000, minVolume24h: 10_000_000, minHistoryDays: 20, maxDataAgeMinutes: 15, historyWindowDays: 30, maxUnreliableHistoryDays: 5,
++    minBaselineVolume: 1_000_000, maxAbsChange24hPct: 300, maxAbsChange7dPct: 1000, maxTurnover: 1, maxRelativeVolume: 50, moverMinAbsMovePct: 8,
++    moverMinRelVolume: 1.5, watchMaxAbsMovePct: 5, watchMinRelVolume: 2, moverMinScore: 4, watchMinScore: 3, maxMovers: 5, maxWatchlist: 3,
++    peggedPriceBand: 0.02, peggedMaxAbs24hPct: 0.5, peggedMaxAbs7dPct: 1, thinVolume24h: 25_000_000, extremeRelVolume: 10, highTurnover: 0.5,
++    variableBaselineIqrRatio: 4, prescreenMinTurnover: 0.15, prescreenMinAbs7dPct: 20,
++  });
++});
++
++test('the stock fixture scan gives the same candidates, scores and exclusions', () => {
++  const data = JSON.parse(readFileSync(new URL('./fixtures/stock-scan.synthetic.json', import.meta.url), 'utf8'));
++  const r = runStockScan(normalizeStockDataset(data), new Date(data.dataset.asOf));
++  const pick = (l: { stock: { symbol: string }; kind: string; score: number; maxScore: number }[]) => l.map((c) => [c.stock.symbol, c.kind, c.score, c.maxScore]);
++  assert.deepEqual(pick(r.movers), [['SYNA', 'mover', 8, 8], ['SYNB', 'mover', 4, 8]]);
++  assert.deepEqual(pick(r.watchlist), [['SYNC', 'watch', 4, 5]]);
++  assert.deepEqual(pick(r.overLimit), []);
++  assert.deepEqual(pick(r.belowThreshold), [['SYND', 'mover', 3, 8]]);
++  assert.deepEqual(r.excluded.map((e) => [e.symbol, e.reasons.map((x) => x.code)]),
++    [['SYNF', ['insufficient_history']], ['SYNG', ['stale_data']], ['SYNH', ['below_price']], ['SYNI', ['history_gap']], ['SYNJ', ['below_liquidity']]]);
++});
+diff -ru -x node_modules -N base/test/stock-movers.test.ts work/test/stock-movers.test.ts
+--- base/test/stock-movers.test.ts	2026-10-28 05:58:04.916730460 -0500
++++ work/test/stock-movers.test.ts	2026-10-28 06:04:09.251999025 -0500
+@@ -68,7 +68,11 @@
+   assert.equal(result.universe, 2);
+   assert.match(result.dataset.label, /market-wide movers/);
+   assert.ok(result.dataset.notes[0].startsWith('Market-wide movers:'));
+-  assert.equal(f.urls.length, 4); // 2 market summaries + 2 gainers
++  // No cached ticker reference in this test (no cache folder), so 1 reference request comes first;
++  // its (empty) page leaves both gainers as "type unknown", still evaluated.
++  assert.equal(f.urls.length, 5); // 1 ticker reference + 2 market summaries + 2 gainers
++  assert.match(f.urls[0]!, /\/v3\/reference\/tickers\?/);
++  assert.ok(result.dataset.notes.some((n: string) => n.startsWith('Security types: Massive ticker reference refreshed')));
+   assert.ok(!out.join('').includes(KEY));
+   const e2: string[] = [];
+   assert.equal(await runStockScanCommand(['--movers'], { ...deps, err: (t: string) => e2.push(t) }), 1);
+diff -ru -x node_modules -N base/test/stock-risk.test.ts work/test/stock-risk.test.ts
+--- base/test/stock-risk.test.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/test/stock-risk.test.ts	2026-10-28 06:06:50.143913652 -0500
+@@ -0,0 +1,53 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++import { runStockScan } from '../src/stocks/analyze.ts';
++import { normalizeStockDataset } from '../src/stocks/normalize.ts';
++import { STOCK_RISK_FLAGS, stockRows } from '../src/web/rows.ts';
++
++globalThis.fetch = (() => {
++  throw new Error('Network access is not allowed in tests.');
++}) as typeof fetch;
++
++const NOW = new Date('2026-10-24T14:00:00Z');
++// SYNTHETIC live-shaped dataset: 21 calm sessions, then a +12% day that faded from its high.
++function dataset(last: Record<string, unknown>, security?: unknown) {
++  // 24 consecutive weekdays up to Thu 2026-10-22, then the latest session Fri 2026-10-23.
++  const days: string[] = [];
++  for (let t = Date.UTC(2026, 9, 22); days.length < 24; t -= 86_400_000) {
++    const wd = new Date(t).getUTCDay();
++    if (wd !== 0 && wd !== 6) days.unshift(new Date(t).toISOString().slice(0, 10));
++  }
++  const bars = days.map((date) => ({ date, close: 20, volume: 2e6, open: 20, high: 20.2, low: 19.8 }));
++  return { dataset: { kind: 'live', label: 'test', source: 'synthetic', asOf: NOW.toISOString() },
++    stocks: [{ symbol: 'FADE', name: 'Fade Example Inc', ...(security ? { security } : {}), bars: [...bars, { date: '2026-10-23', volume: 9e6, ...last }] }] };
++}
++
++test('stock day-range warnings: a big fade from the high, a wide range and a gap are flagged (display only)', () => {
++  const sec = { kind: 'common', typeCode: 'CS', label: 'Common stock', basis: 'Massive ticker reference' };
++  const r = runStockScan(normalizeStockDataset(dataset({ close: 22.4, open: 22, high: 26, low: 21.8 }, sec)), NOW);
++  const [row] = stockRows(r);
++  assert.equal(row!.security?.label, 'Common stock');
++  const risk = row!.risk as { dayRangePct: number; fromDayHighPct: number; gapPct: number; flags: string[] };
++  assert.equal(risk.dayRangePct.toFixed(1), '19.3'); // (26 - 21.8) / 21.8
++  assert.equal(risk.fromDayHighPct.toFixed(1), '-13.8'); // (22.4 - 26) / 26
++  assert.equal(risk.gapPct.toFixed(1), '10.0'); // 22 / 20 - 1
++  assert.deepEqual(risk.flags.map((f) => f.split(':')[0]!.split(' ')[0]), ['Closed', 'The', 'Opened']);
++  assert.ok(STOCK_RISK_FLAGS.fadeFromHighPct === 10 && STOCK_RISK_FLAGS.dayRangePct === 15 && STOCK_RISK_FLAGS.gapPct === 8);
++});
++
++test('inconsistent open/high/low is ignored (no flags, no invented range); the bar itself is still used', () => {
++  const r = runStockScan(normalizeStockDataset(dataset({ close: 22.4, open: 22, high: 21, low: 21.8 })), NOW); // high below low
++  const [row] = stockRows(r);
++  const risk = row!.risk as { dayRangePct: number | null; flags: string[]; unavailable: string[] };
++  assert.equal(risk.dayRangePct, null);
++  assert.deepEqual(risk.flags, []);
++  assert.ok(risk.unavailable.some((u) => u.startsWith('the day\'s open, high and low')));
++  assert.equal(row!.unitPrice, 22.4);
++  assert.equal(row!.security, undefined);
++});
++
++test('a security type is accepted only from a live dataset', () => {
++  const d = dataset({ close: 22.4, open: 22, high: 26, low: 21.8 }, { kind: 'etf', typeCode: 'ETF', label: 'ETF', basis: 'x' });
++  d.dataset.kind = 'synthetic';
++  assert.equal(normalizeStockDataset(d).stocks[0]!.security, undefined);
++});
+diff -ru -x node_modules -N base/test/stock-security.test.ts work/test/stock-security.test.ts
+--- base/test/stock-security.test.ts	1969-12-31 18:00:00.000000000 -0600
++++ work/test/stock-security.test.ts	2026-10-28 06:04:42.070170370 -0500
+@@ -0,0 +1,164 @@
++import assert from 'node:assert/strict';
++import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { test } from 'node:test';
++import { type FetchLike, createHttpClient } from '../src/providers/http.ts';
++import { fetchMarketMovers } from '../src/providers/massive.ts';
++import {
++  REFERENCE_MAX_AGE_MS, classifyTicker, gearing, loadTickerReference, parseTickerPage, readCachedReference, writeCachedReference, type TickerReference,
++} from '../src/providers/massive-tickers.ts';
++import { runStockScanCommand } from '../src/stocks/command.ts';
++import { DAY_MS } from '../src/core/time.ts';
++
++globalThis.fetch = (() => {
++  throw new Error('Network access is not allowed in tests.');
++}) as typeof fetch;
++
++// SYNTHETIC reference data in the documented /v3/reference/tickers shape. Invented tickers and names.
++const KEY = 'TEST-TICKERS-KEY-not-real-6060';
++const NOW = new Date('2026-10-24T14:00:00Z'); // Saturday; latest sessions Fri 10-23 and Thu 10-22
++const ref = (rows: [string, string, string][], complete = true): TickerReference => ({ fetchedAt: NOW.toISOString(), complete, tickers: new Map(rows.map(([t, n, ty]) => [t, { name: n, type: ty }])) });
++
++test('gearing: leveraged and inverse funds are recognised by name; ordinary and short-term bond funds are not', () => {
++  for (const n of ['Direxion Daily Semiconductor Bull 3X Shares', 'ProShares UltraPro QQQ', 'Tradr 2X Long NVDA Daily ETF', 'ProShares Ultra Bloomberg Crude Oil', 'GraniteShares 1.5x Long COIN Daily ETF']) assert.equal(gearing(n), 'leveraged', n);
++  for (const n of ['Direxion Daily Semiconductor Bear 3X Shares', 'ProShares Short QQQ', 'T-Rex 2X Inverse TSLA Daily Target ETF', 'ProShares UltraShort Bitcoin ETF']) assert.equal(gearing(n), 'inverse', n);
++  for (const n of ['SPDR S&P 500 ETF Trust', 'Invesco QQQ Trust', 'Vanguard Short-Term Bond ETF', 'iShares Short Treasury Bond ETF', 'Example Short Duration Income Fund']) assert.equal(gearing(n), null, n);
++});
++
++test('classifyTicker: common stock and ADRs kept; ETFs kept and labelled; leveraged/inverse ETFs, warrants and units left out', () => {
++  const r = ref([['AAA', 'Alpha Corp', 'CS'], ['BBB', 'Beta ADR', 'ADRC'], ['IDX', 'Example Index ETF', 'ETF'], ['LEV', 'Example Daily Bull 3X Shares', 'ETF'],
++    ['INV', 'Example Inverse Fund', 'ETN'], ['AAAW', 'Alpha Corp Warrant', 'WARRANT'], ['SPCU', 'Example Acquisition Unit', 'UNIT'], ['PRF', 'Alpha Pref', 'PFD']]);
++  assert.deepEqual([classifyTicker('AAA', r).keep, classifyTicker('AAA', r).security.label, classifyTicker('AAA', r).name], [true, 'Common stock', 'Alpha Corp']);
++  assert.equal(classifyTicker('BBB', r).security.kind, 'adr');
++  assert.deepEqual([classifyTicker('IDX', r).keep, classifyTicker('IDX', r).security.label], [true, 'ETF']);
++  assert.deepEqual([classifyTicker('LEV', r).keep, classifyTicker('LEV', r).reason], [false, 'leveraged ETF/ETN']);
++  assert.deepEqual([classifyTicker('INV', r).keep, classifyTicker('INV', r).reason], [false, 'inverse ETF/ETN']);
++  assert.deepEqual([classifyTicker('AAAW', r).keep, classifyTicker('AAAW', r).reason], [false, 'warrant']);
++  assert.deepEqual([classifyTicker('SPCU', r).keep, classifyTicker('SPCU', r).reason], [false, 'unit']);
++  assert.equal(classifyTicker('PRF', r).keep, false);
++  assert.deepEqual([classifyTicker('ZZZ', r).keep, classifyTicker('ZZZ', r).security.label], [true, 'Type unknown']); // not in the list: kept, labelled
++  assert.deepEqual([classifyTicker('AAA', null).keep, classifyTicker('AAA', null).security.label], [true, 'Type not checked']);
++});
++
++test('parseTickerPage: follows only Massive\'s own next_url, takes just the cursor, skips malformed rows', () => {
++  const ok = parseTickerPage({ results: [{ ticker: 'AAA', name: 'Alpha\u0007 Corp', type: 'CS' }, { ticker: 'bad ticker', type: 'CS' }, { ticker: 'BBB' }], next_url: 'https://api.massive.com/v3/reference/tickers?cursor=abc123&apiKey=SHOULD-NOT-BE-USED' });
++  assert.deepEqual(ok.entries, [['AAA', { name: 'Alpha Corp', type: 'CS' }]]);
++  assert.equal(ok.cursor, 'abc123');
++  assert.equal(parseTickerPage({ results: [], next_url: 'https://evil.example.com/v3/reference/tickers?cursor=x' }).cursor, null);
++  assert.equal(parseTickerPage({ results: [], next_url: 'https://api.massive.com/v2/other?cursor=x' }).cursor, null);
++  assert.throws(() => parseTickerPage({ results: 'x' }));
++});
++
++test('reference cache: written only when complete, reused for 7 days, then stale; corrupt files are a miss', () => {
++  const dir = mkdtempSync(join(tmpdir(), 'tickers-cache-'));
++  try {
++    assert.equal(writeCachedReference(dir, ref([['AAA', 'Alpha', 'CS']], false)), false);
++    assert.equal(readCachedReference(dir, NOW), null);
++    assert.equal(writeCachedReference(dir, ref([['AAA', 'Alpha', 'CS']])), true);
++    assert.equal(readCachedReference(dir, new Date(NOW.getTime() + DAY_MS))?.tickers.get('AAA')?.type, 'CS');
++    assert.equal(readCachedReference(dir, new Date(NOW.getTime() + REFERENCE_MAX_AGE_MS + 1)), null);
++    const [file] = readdirSync(dir);
++    assert.ok(!file!.includes('AAA'));
++    writeFileSync(join(dir, file!), '{not json');
++    assert.equal(readCachedReference(dir, NOW), null);
++  } finally {
++    rmSync(dir, { recursive: true, force: true });
++  }
++});
++
++function client(answer: (url: string) => { status: number; body: unknown }, maxCalls = 50) {
++  const urls: string[] = [];
++  const fetch: FetchLike = async (url, init) => {
++    urls.push(url);
++    assert.equal(init?.headers?.authorization, `Bearer ${KEY}`); // key in a header only
++    const a = answer(url);
++    return { ok: a.status < 300, status: a.status, headers: { get: () => null }, text: async () => JSON.stringify(a.body) };
++  };
++  return { urls, c: createHttpClient({ fetch, baseUrl: 'https://api.massive.com', apiKeyHeader: 'authorization', apiKey: `Bearer ${KEY}`, maxCalls, sleep: async () => {} }) };
++}
++
++test('loadTickerReference: pages through next_url, caches a complete list, and reuses it without a request', async () => {
++  const dir = mkdtempSync(join(tmpdir(), 'tickers-load-'));
++  try {
++    const pages = [
++      { results: [{ ticker: 'AAA', name: 'Alpha', type: 'CS' }], next_url: 'https://api.massive.com/v3/reference/tickers?cursor=p2' },
++      { results: [{ ticker: 'LEV', name: 'Example Daily Bull 2X Shares', type: 'ETF' }] },
++    ];
++    let i = 0;
++    const a = client(() => ({ status: 200, body: pages[i++] }));
++    const r = await loadTickerReference({ client: a.c, clock: () => NOW, maxCalls: 50, reserve: 18, cacheDir: dir, minIntervalMs: 0, sleep: async () => {} });
++    assert.equal(r.requestsUsed, 2);
++    assert.equal(r.ref?.tickers.size, 2);
++    assert.match(a.urls[1]!, /cursor=p2/);
++    assert.ok(a.urls.every((u) => !u.includes(KEY)));
++    assert.match(r.note, /refreshed \(2 active tickers, 2 request\(s\)\); cached for 7 days/);
++    const b = client(() => { throw new Error('must not request'); });
++    const again = await loadTickerReference({ client: b.c, clock: () => NOW, maxCalls: 50, reserve: 18, cacheDir: dir, minIntervalMs: 0, sleep: async () => {} });
++    assert.equal(again.requestsUsed, 0);
++    assert.match(again.note, /cached, refreshed weekly; no request made/);
++  } finally {
++    rmSync(dir, { recursive: true, force: true });
++  }
++});
++
++test('loadTickerReference: no room in the request limit, or a failure, leaves types unchecked and the scan going', async () => {
++  const tight = client(() => { throw new Error('must not request'); }, 19);
++  const r1 = await loadTickerReference({ client: tight.c, clock: () => NOW, maxCalls: 19, reserve: 18, cacheDir: null, minIntervalMs: 0, sleep: async () => {} });
++  assert.equal(r1.ref, null);
++  assert.match(r1.note, /not checked: the request limit leaves no room/);
++  const failing = client(() => ({ status: 500, body: {} }));
++  const r2 = await loadTickerReference({ client: failing.c, clock: () => NOW, maxCalls: 50, reserve: 18, cacheDir: null, minIntervalMs: 0, sleep: async () => {} });
++  assert.equal(r2.ref, null);
++  assert.match(r2.note, /request failed \(HTTP 500\)/);
++});
++
++const bar = (T: string, c: number, v: number) => ({ T, c, v, o: c, h: c, l: c, t: 0 });
++const DAYS: Record<string, unknown[]> = {
++  // SYNTHETIC: LIQ traded $20M+ on both days; SPIKE only on the latest; LEVX is a leveraged ETF; WRNTW a warrant.
++  '2026-10-22': [bar('LIQ', 10, 3e6), bar('SPIKE', 10, 1e5), bar('LEVX', 20, 2e6), bar('WRNTW', 10, 5e6), bar('ETFA', 40, 1e6)],
++  '2026-10-23': [bar('LIQ', 11, 3e6), bar('SPIKE', 15, 4e6), bar('LEVX', 30, 2e6), bar('WRNTW', 14, 5e6), bar('ETFA', 41, 1e6)],
++};
++const REF = { results: [
++  { ticker: 'LIQ', name: 'Liquid Example Inc', type: 'CS' }, { ticker: 'SPIKE', name: 'Spike Example Inc', type: 'CS' },
++  { ticker: 'LEVX', name: 'Example Daily Bull 3X Shares', type: 'ETF' }, { ticker: 'WRNTW', name: 'Example Warrant', type: 'WARRANT' }, { ticker: 'ETFA', name: 'Example Broad Market ETF', type: 'ETF' },
++] };
++
++test('movers: previous-day liquidity first, then one-day spikes; excluded security types never take a slot', async () => {
++  const a = client((url) => ({ status: 200, body: { results: DAYS[/stocks\/([\d-]+)/.exec(url)![1]!] ?? [] } }));
++  const r = ref(REF.results.map((x) => [x.ticker, x.name, x.type] as [string, string, string]));
++  const m = await fetchMarketMovers({ client: a.c, clock: () => NOW, maxCalls: 10, sleep: async () => {}, limits: { count: 3 },
++    securityFilter: (t) => { const c = classifyTicker(t, r); return c.keep ? null : c.reason; } });
++  // SPIKE gained most (+50%) but traded under $20M the day before, so LIQ (+10%) and the ordinary ETF
++  // ETFA (+2.5%), both liquid the day before, take the first slots; SPIKE fills the last one.
++  assert.deepEqual(m.tickers, ['LIQ', 'ETFA', 'SPIKE']);
++  assert.match(m.notes[1]!, /picked first \(2 of 3\); 1 one-day spike\(s\) filled the remaining slots/);
++  assert.match(m.notes[2]!, /Left out before evaluation: .*leveraged ETF\/ETN: 1 \(LEVX\).*warrant: 1 \(WRNTW\)|Left out before evaluation: .*warrant: 1 \(WRNTW\).*leveraged ETF\/ETN: 1 \(LEVX\)/);
++});
++
++test('scan stocks --live --movers: names and security types reach the result; scores are untouched', async () => {
++  const dir = mkdtempSync(join(tmpdir(), 'tickers-e2e-'));
++  try {
++    const hist = { results: Array.from({ length: 30 }, (_, i) => ({ t: Date.parse('2026-10-23T04:00:00Z') - (29 - i) * DAY_MS, c: 10 + i * 0.05, v: 5e6, o: 10, h: 12, l: 9 })) };
++    const urls: string[] = [];
++    const fetch: FetchLike = async (url) => {
++      urls.push(url);
++      const body = url.includes('/v3/reference/tickers') ? REF : url.includes('/grouped/') ? { results: DAYS[/stocks\/([\d-]+)/.exec(url)![1]!] ?? [] } : hist;
++      return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(body) };
++    };
++    const out: string[] = [], err: string[] = [];
++    const deps = { env: { POLYGON_API_KEY: KEY, LOCALAPPDATA: dir }, fetch, clock: () => NOW, sleep: async () => {}, out: (t: string) => out.push(t), err: (t: string) => err.push(t) };
++    assert.equal(await runStockScanCommand(['--live', '--movers', '--json'], deps), 0, err.join('\n'));
++    const result = JSON.parse(out.join('\n'));
++    const all = [...result.movers, ...result.watchlist, ...result.belowThreshold].map((c: { stock: { symbol: string; name: string; security: { label: string } } }) => c.stock)
++      .concat(result.noPattern.map((x: { stock: unknown }) => x.stock));
++    const bySym = Object.fromEntries(all.map((s: { symbol: string }) => [s.symbol, s]));
++    assert.equal(bySym.LIQ?.name, 'Liquid Example Inc');
++    assert.equal(bySym.LIQ?.security.label, 'Common stock');
++    assert.ok(!('LEVX' in bySym) && !('WRNTW' in bySym));
++    assert.ok(urls.every((u) => !u.includes(KEY)));
++    assert.ok(!out.join('').includes(KEY));
++  } finally {
++    rmSync(dir, { recursive: true, force: true });
++  }
++});
+diff -ru -x node_modules -N base/test/web.test.ts work/test/web.test.ts
+--- base/test/web.test.ts	2026-10-28 05:58:04.916615671 -0500
++++ work/test/web.test.ts	2026-10-28 06:11:17.969723791 -0500
+@@ -177,3 +177,31 @@
+   }
+   assert.deepEqual([parsePort([]), parsePort(['--port', '5000']), parsePort(['--port', '80']), parsePort(['--port', 'x'])], [4173, 5000, null, null]);
+ });
++
++test('candidate journal: a live scan is saved on this computer and the track record is returned; offline scans are never saved', async () => {
++  const { mkdtempSync, readdirSync, rmSync } = await import('node:fs');
++  const { tmpdir } = await import('node:os');
++  const { join } = await import('node:path');
++  const base = mkdtempSync(join(tmpdir(), 'web-journal-'));
++  try {
++    const coin = (id: string) => ({ id, symbol: id.slice(4), name: `Synthetic ${id}`, current_price: 5, market_cap: 1e9, total_volume: 50e6, price_change_percentage_24h: 0.5, price_change_percentage_7d_in_currency: 1, last_updated: '2026-10-21T11:57:00.000Z' });
++    const chart = { total_volumes: Array.from({ length: 91 }, (_, i) => [Date.UTC(2026, 9, 21) - (91 - i) * DAY_MS, 20e6]) };
++    const f = counting((url) => ({ status: 200, body: url.includes('/coins/markets') ? ['syn-a', 'syn-b'].map(coin) : chart }));
++    const { svc, env } = service(f.fn, { COINGECKO_DEMO_API_KEY: KEY, LOCALAPPDATA: base });
++    const dir = join(base, 'market-scanner', 'candidate-journal');
++    const offline = parse(await handleRequest(post({ mode: 'offline' }), svc, env, PORT));
++    assert.equal(offline.trackRecord.scans, 0);
++    assert.deepEqual(readdirSync(base).includes('market-scanner') ? readdirSync(dir) : [], []);
++    const r = await handleRequest(post({ mode: 'live', maxRequests: 3, confirmLive: true }), svc, env, PORT);
++    assert.equal(r.status, 200, r.body);
++    const files = readdirSync(dir);
++    assert.equal(files.length, 1);
++    assert.match(files[0]!, /^crypto-2026-10-21T/);
++    const data = parse(r);
++    assert.equal(data.trackRecord.scans, 1);
++    assert.equal(data.trackRecord.stats.length, 3);
++    assert.ok(!readFileSync(join(dir, files[0]!), 'utf8').includes(KEY));
++  } finally {
++    rmSync(base, { recursive: true, force: true });
++  }
++});
