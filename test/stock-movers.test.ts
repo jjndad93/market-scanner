@@ -68,7 +68,11 @@ test('scan stocks --live --movers evaluates the gainers end to end; --movers nee
   assert.equal(result.universe, 2);
   assert.match(result.dataset.label, /market-wide movers/);
   assert.ok(result.dataset.notes[0].startsWith('Market-wide movers:'));
-  assert.equal(f.urls.length, 4); // 2 market summaries + 2 gainers
+  // No cached ticker reference in this test (no cache folder), so 1 reference request comes first;
+  // its (empty) page leaves both gainers as "type unknown", still evaluated.
+  assert.equal(f.urls.length, 5); // 1 ticker reference + 2 market summaries + 2 gainers
+  assert.match(f.urls[0]!, /\/v3\/reference\/tickers\?/);
+  assert.ok(result.dataset.notes.some((n: string) => n.startsWith('Security types: Massive ticker reference refreshed')));
   assert.ok(!out.join('').includes(KEY));
   const e2: string[] = [];
   assert.equal(await runStockScanCommand(['--movers'], { ...deps, err: (t: string) => e2.push(t) }), 1);

@@ -125,6 +125,9 @@ test('dashboard: warnings appear only on crypto research leads, labelled as the 
   // Only crypto leads get them: in the table via the lead map (empty without discovery) and in the
   // not-checked list. Stock results carry no discovery, so stock rows never show them.
   assert.match(app, /state\.leadById = new Map\(r\.discovery \? \[\.\.\.r\.discovery\.highPriority, \.\.\.r\.discovery\.watchlist\]\.map\(\(e\) => \[e\.id, e\]\) : \[\]\);/);
-  assert.match(app, /\.\.\.\(state\.leadById\?\.has\(row\.id\) \? leadNotes\(state\.leadById\.get\(row\.id\)\) : \[\]\)/);
+  // Table rows: the compact brief shows under the name with the second-source warnings; the scan's own
+  // cautions fold into the row's details (rows without a brief keep both under the name).
+  assert.match(app, /\.\.\.\(state\.leadById\?\.has\(row\.id\) \? leadNotes\(state\.leadById\.get\(row\.id\)\)\.slice\(row\.brief \? 1 : 0\) : \[\]\)/);
+  assert.match(app, /\.\.\.\(row\.brief && state\.leadById\?\.has\(row\.id\) \? leadNotes\(state\.leadById\.get\(row\.id\)\)\.slice\(0, 1\) : \[\]\)/);
   assert.match(app, /if \(r\.discovery\) root\.append\(discoveryView\(r\.discovery, coverage\.length > 0\)\)/);
 });

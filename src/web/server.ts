@@ -25,6 +25,8 @@ import { createCmcCheckService, validateCmcBody } from './cmc-check.ts';
 import { createCryptoSearchService, validateSearchBody } from './crypto-search.ts';
 import { type LastScan, NEWS_DEFAULT_LIMIT, NEWS_MAX_LIMIT, createNewsService, validateNewsRequest } from './news.ts';
 import { createWhereToBuyService, validateWtbRequest } from './where-to-buy.ts';
+import { withBriefs } from './brief.ts';
+import { journalDir, loadJournal, recordScan, trackRecord } from '../tracking/journal.ts';
 
 export const WEB_HOST = '127.0.0.1';
 export const WEB_DEFAULT_PORT = 4173;
@@ -76,7 +78,7 @@ const NEWS_ROUTES: Record<string, Market> = { '/api/news/crypto': 'crypto', '/ap
 /** "Where to buy" for one row of the last scan, fetched only when the user opens its panel. */
 const WTB_ROUTES: Record<string, Market> = { '/api/where-to-buy/crypto': 'crypto', '/api/where-to-buy/stocks': 'stocks' };
 /** Crypto asset search (any CoinGecko coin) and one-asset lookup; separate from scans. */
-const SEARCH_ROUTES: Record<string, 'search' | 'asset' | 'profile'> = { '/api/crypto/search': 'search', '/api/crypto/asset': 'asset', '/api/crypto/profile': 'profile' };
+const SEARCH_ROUTES: Record<string, 'search' | 'asset' | 'profile' | 'trending'> = { '/api/crypto/search': 'search', '/api/crypto/asset': 'asset', '/api/crypto/profile': 'profile', '/api/crypto/trending': 'trending' };
 /** CoinMarketCap cross-check of the last crypto scan's research leads (user-triggered). */
 const CMC_ROUTE = '/api/crypto/cmc-check';
 
@@ -118,11 +120,17 @@ export function createScanService(deps: ScanDeps, maxRequestsCap: number, newsOp
         if (exitCode !== 0) return json(exitCode === 1 ? 422 : 500, { ok: false, market, mode, error: stderr || 'The scan failed without a message.', startedAt });
         const result = JSON.parse(stdout);
         // Rows for the budget view, built from the result only; the report's own exclusion labels.
-        const rows = market === 'crypto' ? cryptoRows(result, new Date(result.evaluatedAt)) : stockRows(result);
+        const rows = withBriefs(market === 'crypto' ? cryptoRows(result, new Date(result.evaluatedAt)) : stockRows(result), result);
         last[market] = { mode, rows, evaluatedAt: result.evaluatedAt, ...(market === 'crypto' ? { discovery: result.discovery } : {}) };
+        // Candidate journal (this computer only): live scans are saved; the track record comes from
+        // earlier live scans and costs no request. Offline (test data) scans are never saved.
+        const dir = journalDir(deps.env);
+        if (dir && mode === 'live') recordScan(dir, market, new Date(result.evaluatedAt), rows);
+        const record = dir ? trackRecord(loadJournal(dir), deps.clock(), market) : null;
         return json(200, {
           ok: true, market, mode, maxRequests: mode === 'live' ? maxRequests : null, startedAt, result,
           rows,
+          trackRecord: record,
           exclusionLabels: market === 'crypto' ? EXCLUSION_LABEL : STOCK_EXCLUSION_LABEL,
           limitations: LIMITATIONS[market],
         });
@@ -201,7 +209,8 @@ export async function handleRequest(req: WebRequest, service: ScanService, env: 
       const s = validateSearchBody(req.body, kind);
       if ('error' in s) return json(400, { ok: false, error: s.error });
       try {
-        const r = kind === 'search' ? await service.search.search(s.mode, s.value, s.refresh, s.confirmLive)
+        const r = kind === 'trending' ? await service.search.trending(s.mode, s.refresh, s.confirmLive)
+          : kind === 'search' ? await service.search.search(s.mode, s.value, s.refresh, s.confirmLive)
           : kind === 'profile' ? await service.search.profile(s.mode, s.value, s.refresh, s.confirmLive)
             : await service.search.asset(s.mode, s.value, s.refresh, s.confirmLive);
         return { ...json(r.status, r.data), body: redactSecrets(JSON.stringify(r.data), env) };

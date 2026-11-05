@@ -63,3 +63,30 @@ export async function fetchCoinMarket(client: HttpClient, id: string): Promise<R
     vs_currency: 'usd', ids: id, price_change_percentage: '24h,7d', sparkline: 'false',
   }));
 }
+
+/**
+ * CoinGecko trending: "top 15 trending coins … based on user searches in the last 24 hours" (Demo
+ * API reference, GET /search/trending, checked 2026-10-28). This is SEARCH INTEREST ON ONE SITE:
+ * not social media coverage, not sentiment, not buying. Order is CoinGecko's; rank = position.
+ */
+export interface TrendingCoin { id: string; name: string; symbol: string; trendRank: number; marketCapRank: number | null }
+export function parseTrending(json: unknown): { coins: TrendingCoin[]; skipped: number } {
+  if (!isRecord(json) || !Array.isArray(json.coins)) throw new ProviderResponseError('/search/trending did not return an object with a coins array.');
+  const coins: TrendingCoin[] = [];
+  let skipped = 0;
+  for (const entry of json.coins.slice(0, 30)) {
+    const c = isRecord(entry) && isRecord(entry.item) ? entry.item : null;
+    const id = c && typeof c.id === 'string' && COIN_ID_PATTERN.test(c.id) ? c.id : null;
+    const name = c ? cleanText(c.name, 120) : null;
+    const symbol = c ? cleanText(c.symbol, 30) : null;
+    if (!c || id === null || name === null || symbol === null || coins.some((x) => x.id === id)) { skipped++; continue; }
+    const r = c.market_cap_rank;
+    coins.push({ id, name, symbol: symbol.toUpperCase(), trendRank: coins.length + 1, marketCapRank: typeof r === 'number' && Number.isInteger(r) && r >= 1 ? r : null });
+  }
+  return { coins, skipped };
+}
+
+/** One request: CoinGecko's trending coins (search interest, last 24 hours). */
+export async function fetchTrending(client: HttpClient) {
+  return parseTrending(await client.getJson('/search/trending', {}));
+}

@@ -4,10 +4,10 @@ import { buildView, parseBudgetControls } from '/budget.js';
 import { coverageFigures, coverageSentences, dashboardWording, exclusionBreakdown, leadCrossCheckWarnings, outlookView, plainCheck, profileContext, supplyText } from '/simple-view.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { status: null, running: false, lastRequest: null, last: null, news: new Map(), wtb: new Map(), cmc: null };
+const state = { status: null, running: false, lastRequest: null, last: null, news: new Map(), wtb: new Map(), cmc: null, attention: null };
 const MARKET = {
   crypto: { button: 'Scan Crypto', blurb: 'Movers and watchlist candidates from the CoinGecko top 500, using the existing scanner rules.', keyFlag: 'cryptoKeyConfigured', keyEnv: 'COINGECKO_DEMO_API_KEY', provider: 'CoinGecko', pace: 'about 0.7 s apart' },
-  stocks: { button: 'Scan US Stocks', blurb: 'Live: the previous session\'s biggest gainers across all US stocks priced $5-$50, checked with the scanner rules (end-of-day data; about 17 requests, 3-4 minutes). Offline: a fixed test list.', keyFlag: 'stocksKeyConfigured', keyEnv: 'POLYGON_API_KEY', provider: 'Massive', pace: 'about 12.5 s apart (free plan: 5 per minute)' },
+  stocks: { button: 'Scan US Stocks', blurb: 'Live: the previous session\'s biggest gainers across all US stocks priced $5-$50 (ordinary stocks, ADRs and labelled ETFs; leveraged and inverse ETFs, warrants and units left out), checked with the scanner rules. End-of-day data; about 17 requests (3-4 minutes), plus about 12 once a week to refresh stock types. Offline: a fixed test list.', keyFlag: 'stocksKeyConfigured', keyEnv: 'POLYGON_API_KEY', provider: 'Massive', pace: 'about 12.5 s apart (free plan: 5 per minute)' },
 };
 
 function el(tag, attrs = {}, ...children) {
@@ -128,6 +128,7 @@ async function scan(request, { auto = false } = {}) {
       state.news = new Map(); // news panels belong to one scan
       state.wtb = new Map(); // so do "where to buy" panels
       state.cmc = null; // so does a cross-check
+      state.attention = null; // and an attention check
       render();
       $('rerun-btn').hidden = false;
     }
@@ -167,8 +168,14 @@ function stat(label, value, sub) {
 
 const STATUS_LABEL = { qualified: 'Qualified', over_display_limit: 'Qualified (over display limit)', below_threshold: 'Below threshold', no_pattern: 'No signal pattern' };
 
-function classificationCell(c) {
-  if (!c) return el('span', { class: 'muted' }, 'US stock (fixed list)');
+function classificationCell(c, row) {
+  if (!c) {
+    // Stocks: the security type from Massive's ticker reference (live market-wide scans), when known.
+    const sec = row?.security;
+    return sec
+      ? el('div', {}, el('span', { class: `chip ${sec.kind === 'etf' ? 'watch' : 'cat'}` }, sec.label), el('div', { class: 'sym' }, sec.basis))
+      : el('span', { class: 'muted' }, 'Security type not checked');
+  }
   const basis = { provider: 'provider data', curated_list: 'curated list', heuristic: 'heuristic', none: 'no reliable evidence' }[c.basis];
   return el('div', {},
     el('span', { class: `chip ${c.category === 'unknown' ? 'dim' : 'cat'}` }, c.label),
@@ -187,6 +194,7 @@ function riskCell(row) {
     lines.push(`Volume baseline: ${v.insufficient ? `not measured (${v.validDays} valid days)` : `${v.highlyVariable ? 'HIGHLY VARIABLE' : 'stable'} (Q3/Q1 ${v.iqrRatio.toFixed(1)}x)`}`);
   } else {
     lines.push(`Session ${r.sessionDate}; ${usd(r.dollarVolume)} traded`);
+    if (r.dayRangePct !== null && r.dayRangePct !== undefined) lines.push(`Day's range: ${r.dayRangePct.toFixed(1)}%; close vs day's high: ${pct(r.fromDayHighPct)}${r.gapPct !== null ? `; open vs previous close: ${pct(r.gapPct)}` : ''}`);
   }
   return el('div', { class: 'risk' },
     ...lines.map((l) => el('div', {}, l)),
@@ -194,11 +202,38 @@ function riskCell(row) {
     el('details', {}, el('summary', {}, 'Period and limits'), el('ul', {}, el('li', {}, `Period: ${r.period}`), ...r.unavailable.map((u) => el('li', {}, `Not available: ${u}`)))));
 }
 
+// ---- compact row summary --------------------------------------------------------------------------
+// Why it is listed, evidence quality, key risk, attention (only after the optional check) and the
+// next step, from the server's row brief (src/web/brief.ts). Every caution stays in the row's
+// "Cautions, category & volatility" details; the market signal stays in the Signal column.
+
+const EVIDENCE_LABEL = { test_data: 'Test data', limited: 'Limited', single_source: 'One source' };
+
+function attentionText(row) {
+  const d = state.attention?.data;
+  if (row.market !== 'crypto' || !d) return null;
+  const hit = d.coins.find((c) => c.id === row.id);
+  return hit ? `#${hit.trendRank} of ${d.coins.length} on CoinGecko's trending searches (24h)` : `not among CoinGecko's ${d.coins.length} trending searches`;
+}
+
+function briefView(row) {
+  const b = row.brief;
+  if (!b) return null;
+  const att = attentionText(row);
+  return el('div', { class: 'brief' },
+    b.reason ? el('div', { class: 'brief-reason' }, b.reason) : null,
+    el('div', {}, el('span', { class: `ev ev-${b.evidence.level}` }, `Evidence: ${EVIDENCE_LABEL[b.evidence.level]}`), ' ', el('span', { class: 'sym' }, b.evidence.text)),
+    b.keyRisk ? el('div', { class: 'brief-risk' }, `Key risk: ${b.keyRisk}`) : null,
+    att ? el('div', { class: 'sym' }, `Attention: ${att}`) : null,
+    el('div', { class: 'brief-next' }, `Next: ${b.next}`));
+}
+
 function rowView({ row, afford }) {
   const fit = afford.passesBudget && afford.passesUnitPrice;
   return el('tr', {},
-    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : row.symbol),
-      ...(state.leadById?.has(row.id) ? leadNotes(state.leadById.get(row.id)) : [])),
+    el('td', { class: 'asset' }, el('div', { class: 'name' }, row.name), el('div', { class: 'sym' }, row.market === 'crypto' ? `${row.symbol} · ${row.id}` : [row.name === row.symbol ? null : row.symbol, row.security?.label].filter(Boolean).join(' · ') || row.symbol),
+      briefView(row),
+      ...(state.leadById?.has(row.id) ? leadNotes(state.leadById.get(row.id)).slice(row.brief ? 1 : 0) : [])),
     el('td', {}, el('span', { class: `chip ${row.signal.category === 'Mover' ? 'mover' : row.signal.category === 'Watchlist' ? 'watch' : 'dim'}` }, row.signal.category ?? STATUS_LABEL[row.signal.status]),
       el('div', { class: 'sym' }, [row.signal.category ? STATUS_LABEL[row.signal.status] : null, row.signal.score === null ? null : `score ${row.signal.score}/${row.signal.maxScore}`, row.volumeMultiple === null ? null : `${row.volumeMultiple.toFixed(2)}x volume`].filter(Boolean).join(' · '))),
     el('td', { class: 'num' }, price(row.unitPrice)),
@@ -210,8 +245,8 @@ function rowView({ row, afford }) {
     el('td', { class: 'row-actions' },
       el('div', { class: 'action-line' }, newsButton(row), wtbButton(row), snapshotButton(row)),
       row.why.length ? el('details', {}, el('summary', {}, 'Why'), el('ul', {}, ...row.why.map((w) => el('li', {}, w)))) : null,
-      el('details', {}, el('summary', {}, 'Category & volatility'),
-        el('div', { class: 'more' }, classificationCell(row.classification), riskCell(row),
+      el('details', {}, el('summary', {}, 'Cautions, category & volatility'),
+        el('div', { class: 'more' }, ...(row.brief && state.leadById?.has(row.id) ? leadNotes(state.leadById.get(row.id)).slice(0, 1) : []), classificationCell(row.classification, row), riskCell(row),
           ...row.warnings.filter((w) => !row.risk.flags.includes(w)).map((w) => el('div', { class: 'sym' }, w)),
           el('div', { class: 'sym' }, `Price as of ${when(row.priceAsOf)}`)))));
 }
@@ -356,6 +391,39 @@ function newsPanelRow(row) {
     }
   }
   return el('tr', { class: 'news-row' }, el('td', { colspan: '6' }, body));
+}
+
+// ---- track record (candidate journal) -------------------------------------------------------------
+// From the server's journal of earlier LIVE scans on this computer; no request is made. One line on the
+// page; the numbers behind it are folded.
+
+function horizonText(st) {
+  if (!st.measured) return `after ${st.horizon}d: not measured yet`;
+  return `after ${st.horizon}d: ${st.up} of ${st.measured} up (median ${pct(st.medianPct)})`;
+}
+
+function trackRecordView(tr, market) {
+  if (!tr) return null;
+  const label = market === 'stocks' ? 'stock' : 'crypto';
+  if (!tr.candidates) {
+    return el('p', { class: 'kv' }, el('b', {}, 'Track record: '), `starts with your first live ${label} scan. Each candidate is checked 1, 3 and 7 days later against later scans, at no extra request.`);
+  }
+  const three = tr.stats.find((x) => x.horizon === 3);
+  const lead = three && three.measured ? horizonText(three) : horizonText(tr.stats[0]);
+  const row = (c) => el('tr', {},
+    el('td', {}, el('div', { class: 'name' }, c.symbol), el('div', { class: 'sym' }, c.name)),
+    el('td', {}, when(c.flaggedAt)),
+    el('td', {}, `${c.category}${c.score !== null ? ` ${c.score}/${c.maxScore}` : ''}`),
+    el('td', { class: 'num' }, price(c.price)),
+    ...[1, 3, 7].map((h) => el('td', { class: `num ${signClass(c.after[h])}` }, c.after[h] === null ? '—' : pct(c.after[h]))));
+  return el('div', { class: 'kv' },
+    el('b', {}, 'Track record: '), `${tr.candidates} ${label} candidate(s) flagged by your live scans since ${when(tr.firstScan)}; ${lead}.`,
+    el('details', {}, el('summary', {}, 'How earlier candidates did'),
+      el('ul', { class: 'notes' }, ...[{ category: 'All', stats: tr.stats }, ...tr.byCategory].map((g) => el('li', {}, `${g.category}: ${g.stats.map(horizonText).join('; ')}`))),
+      tr.recent.length ? el('div', { class: 'table-wrap' }, el('table', {},
+        el('thead', {}, el('tr', {}, ...['Asset', 'First flagged', 'Signal', 'Price then', '1 day', '3 days', '7 days'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, ...tr.recent.map(row)))) : null,
+      el('ul', { class: 'notes' }, ...tr.notes.map((n) => el('li', {}, n)))));
 }
 
 // ---- save to the Asset Snapshot Log ----------------------------------------------------------------
@@ -585,6 +653,7 @@ function discoveryView(d, coverageShown) {
       el('li', {}, `${c.withActivity} asset(s) showed snapshot activity; ${c.withActivityNotEvaluated} of them could not be evaluated for lack of reliable data.`),
       ...notes.map((n) => el('li', {}, n)))));
   box.append(cmcView());
+  box.append(attentionView());
   return box;
 }
 
@@ -646,6 +715,57 @@ function cmcLead(x, attribution) {
     x.match.status === 'matched' ? cmcAttribution(attribution, true) : null);
 }
 
+async function loadAttention(refresh = false) {
+  const mode = state.last?.mode === 'live' ? 'live' : 'offline';
+  state.attention = { loading: true, data: state.attention?.data ?? null, error: null };
+  render();
+  const send = (extra) => fetch('/api/crypto/trending', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-market-scanner': '1', accept: 'application/json' },
+    body: JSON.stringify({ mode, refresh, ...extra }),
+  }).then(async (r) => [r, await r.json()]);
+  try {
+    let [r, data] = await send({});
+    if (r.status === 428 && data.needsConfirm) {
+      if (!window.confirm(`Check CoinGecko's trending searches?\n\nThis sends 1 CoinGecko request (Demo plan: 100 per minute). The answer is cached for 30 minutes.\n\nLive search requests this session: ${data.liveRequestsThisSession} of ${data.sessionRequestLimit}.`)) {
+        state.attention = { loading: false, data: state.attention?.data ?? null, error: null };
+        return render();
+      }
+      [r, data] = await send({ confirmLive: true });
+    }
+    state.attention = data.ok ? { loading: false, data, error: null } : { loading: false, data: state.attention?.data ?? null, error: data.error || `The attention check failed (HTTP ${r.status}).` };
+  } catch {
+    state.attention = { loading: false, data: state.attention?.data ?? null, error: 'Could not reach the local server.' };
+  }
+  render();
+}
+
+function attentionView() {
+  const box = el('div', { class: 'cmc' }, el('h4', {}, 'Attention: CoinGecko trending searches'),
+    el('p', { class: 'muted small' }, 'Optional and separate from the scanner\'s score: shows which coins are among CoinGecko\'s most-searched in the last 24 hours, and marks them in the table. Search interest on one site only: not social media, not sentiment, not buying. Offline uses test data; live sends 1 CoinGecko request after you confirm (cached 30 minutes).'));
+  const a = state.attention;
+  const b = el('button', { type: 'button', class: 'secondary' }, a?.data ? 'Check again' : 'Check trending searches');
+  b.disabled = Boolean(a?.loading);
+  b.addEventListener('click', () => loadAttention(Boolean(a?.data && a.data.mode === 'live')));
+  box.append(b);
+  if (a?.loading) box.append(el('div', { class: 'running' }, el('span', { class: 'spinner' }), 'Checking…'));
+  if (a?.error) box.append(el('div', { class: 'error' }, a.error));
+  const d = a?.data;
+  if (d) {
+    if (d.dataKind === 'test_data') box.append(el('div', { class: 'banner test' }, 'TEST DATA: synthetic trending list with invented coins. NOT market data.'));
+    const inScan = new Set((state.last?.rows ?? []).map((r) => r.id));
+    const label = (c) => `#${c.trendRank} ${c.symbol}${c.marketCapRank ? ` (market-cap rank ${c.marketCapRank})` : ''}`;
+    const hits = d.coins.filter((c) => inScan.has(c.id));
+    const others = d.coins.filter((c) => !inScan.has(c.id));
+    box.append(el('p', { class: 'kv' }, `${hits.length} of ${d.coins.length} trending coin(s) are in this scan${hits.length ? `: ${hits.map(label).join(', ')}` : ''}.`));
+    if (others.length) box.append(el('p', { class: 'sym' }, `Trending but not in this scan (not evaluated; search them above): ${others.map(label).join(', ')}.`));
+    box.append(el('ul', { class: 'notes' },
+      el('li', {}, d.meaning),
+      el('li', {}, `Source: ${d.source}. Fetched ${when(d.fetchedAt)}${d.fromCache ? ' (cached in memory; no request made)' : ''}; requests used: ${d.requestsUsed}.`)));
+  }
+  return box;
+}
+
 function cmcView() {
   const box = el('div', { class: 'cmc' }, el('h4', {}, 'Second source: CoinMarketCap'),
     el('p', { class: 'muted small' }, 'Cross-checks the scan\'s research leads (the coins in the table with a signal, plus those that moved but were not checked): price, market cap, category tags. Runs only when you click. Offline scans use test data; a live scan sends 1 CoinMarketCap request (about 2 credits) after you confirm.'));
@@ -703,6 +823,8 @@ function render() {
     cov ? `history ${cov.historyFetched} of ${cov.historyEligible}` : null,
     cov ? `${cov.requestsUsed} of ${cov.requestLimit} API requests used` : synthetic ? '0 API requests (offline)' : null,
   ].filter(Boolean).join(' · ')));
+  const tr = trackRecordView(data.trackRecord, data.market);
+  if (tr) root.append(tr);
   // Send the top movers of the main table to the Snapshot Log in one go (to check them on your phone).
   const top = view ? [...view.sections[0].rows].filter((x) => x.row.dataKind !== 'test_data')
     .sort((a, b) => Math.abs(b.row.change.short.value ?? 0) - Math.abs(a.row.change.short.value ?? 0)).slice(0, SEND_TOP).map((x) => x.row) : [];

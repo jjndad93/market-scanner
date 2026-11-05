@@ -19,7 +19,7 @@
 import { readFileSync } from 'node:fs';
 import { has, type Evidence } from '../core/evidence.ts';
 import { COINGECKO_ATTRIBUTION, COINGECKO_DEMO_BASE_URL, COINGECKO_KEY_ENV, COINGECKO_KEY_HEADER, ProviderResponseError, parseMarkets } from '../providers/coingecko.ts';
-import { COIN_ID_PATTERN, type SearchCoin, fetchCoinMarket, fetchCoinSearch, parseSearchCoins } from '../providers/coingecko-search.ts';
+import { COIN_ID_PATTERN, type SearchCoin, type TrendingCoin, fetchCoinMarket, fetchCoinSearch, fetchTrending, parseSearchCoins, parseTrending } from '../providers/coingecko-search.ts';
 import { type CoinProfile, fetchCoinProfile, parseCoinProfile } from '../providers/coingecko-profile.ts';
 import { HttpError, type FetchLike, createHttpClient } from '../providers/http.ts';
 import { forecastsFor } from './forecasts.ts';
@@ -38,6 +38,10 @@ export const PROFILE_SOURCE = 'CoinGecko Demo API /coins/{id} (project descripti
 export const LIVE_MIN_INTERVAL_MS = 2_000;
 export const SESSION_REQUEST_LIMIT = 100;
 export const BUNDLED_CRYPTO_SEARCH_FIXTURE = new URL('../../test/fixtures/crypto-search.synthetic.json', import.meta.url);
+export const TRENDING_CACHE_TTL_MS = 30 * 60_000;
+export const TRENDING_SOURCE = 'CoinGecko Demo API /search/trending (top coins by CoinGecko user searches, last 24 hours)';
+/** Shown with every attention result: what it is and what it is not. */
+export const TRENDING_MEANING = 'Search interest on CoinGecko only (its top trending coins by user searches in the last 24 hours). It is not social-media coverage, not sentiment and not evidence of buying.';
 export const SEARCH_SOURCE = 'CoinGecko Demo API /search (all coins CoinGecko lists, sorted by market cap)';
 export const ASSET_SOURCE = 'CoinGecko Demo API /coins/markets (USD)';
 
@@ -110,7 +114,7 @@ function failureMessage(e: unknown): string {
 }
 
 /** Validates a search or lookup body. */
-export function validateSearchBody(body: string, kind: 'search' | 'asset' | 'profile'): { mode: Mode; value: string; refresh: boolean; confirmLive: boolean } | { error: string } {
+export function validateSearchBody(body: string, kind: 'search' | 'asset' | 'profile' | 'trending'): { mode: Mode; value: string; refresh: boolean; confirmLive: boolean } | { error: string } {
   if (body.length > 1024) return { error: 'Request body too large.' };
   let d: unknown;
   try {
@@ -121,6 +125,7 @@ export function validateSearchBody(body: string, kind: 'search' | 'asset' | 'pro
   if (typeof d !== 'object' || d === null) return { error: 'Request body must be a JSON object.' };
   const r = d as Record<string, unknown>;
   if (r.mode !== 'offline' && r.mode !== 'live') return { error: 'mode must be "offline" or "live".' };
+  if (kind === 'trending') return { mode: r.mode, value: '', refresh: r.refresh === true, confirmLive: r.confirmLive === true };
   const value = kind === 'search' ? normalizeQuery(r.query) : (typeof r.id === 'string' && COIN_ID_PATTERN.test(r.id) ? r.id : null);
   if (value === null) {
     return { error: kind === 'search' ? 'Enter 2 to 50 characters: letters, digits, spaces, or . _ - ( ).' : 'id must be a CoinGecko coin id from the search results.' };
@@ -132,12 +137,13 @@ export function createCryptoSearchService(deps: SearchDeps, opts: { getLastCrypt
   const searchCache = new Map<string, { at: number; coins: SearchCoin[]; skipped: number }>();
   const assetCache = new Map<string, { at: number; raw: RawAsset[] }>();
   const profileCache = new Map<string, { at: number; profile: CoinProfile }>();
+  let trendingCache: { at: number; coins: TrendingCoin[]; skipped: number } | undefined;
   let busy = false;
   let lastLiveAt = -Infinity;
   let used = 0;
   const minInterval = opts.minIntervalMs ?? LIVE_MIN_INTERVAL_MS;
   const limit = opts.sessionLimit ?? SESSION_REQUEST_LIMIT;
-  let fixtureCache: { asOf: string; search: unknown; markets: unknown } | undefined;
+  let fixtureCache: { asOf: string; search: unknown; markets: unknown; trending?: unknown } | undefined;
   const fixture = () => (fixtureCache ??= JSON.parse(readFileSync(opts.fixture ?? BUNDLED_CRYPTO_SEARCH_FIXTURE, 'utf8')));
   const reply = (status: number, data: Record<string, unknown>): Reply => ({ status, data: { ok: status === 200, ...data } });
   const session = () => ({ liveRequestsThisSession: used, sessionRequestLimit: limit });
@@ -201,6 +207,23 @@ export function createCryptoSearchService(deps: SearchDeps, opts: { getLastCrypt
       if (!('value' in r)) return r;
       searchCache.set(cacheKey, { at: now, coins: r.value.coins, skipped: r.value.skipped });
       return reply(200, { ...base, fetchedAt: new Date(now).toISOString(), fromCache: false, requestsUsed: r.calls, skipped: r.value.skipped, ...rankResults(r.value.coins, query), ...session() });
+    },
+    /** Attention check: CoinGecko trending, one request on confirmation, cached for 30 minutes. */
+    async trending(mode: Mode, refresh: boolean, confirmLive: boolean): Promise<Reply> {
+      if (mode === 'offline') {
+        const f = fixture() as { asOf: string; trending?: unknown };
+        const parsed = parseTrending(f.trending);
+        return reply(200, { mode, dataKind: 'test_data', source: 'Synthetic trending fixture (TEST DATA, invented coins)', meaning: TRENDING_MEANING, fetchedAt: f.asOf, fromCache: false, requestsUsed: 0, ...parsed, ...session() });
+      }
+      const now = deps.clock().getTime();
+      const base = { mode, dataKind: 'verified_market_data', source: TRENDING_SOURCE, meaning: TRENDING_MEANING, attribution: COINGECKO_ATTRIBUTION };
+      if (trendingCache && now - trendingCache.at < TRENDING_CACHE_TTL_MS && !refresh) {
+        return reply(200, { ...base, fetchedAt: new Date(trendingCache.at).toISOString(), fromCache: true, requestsUsed: 0, coins: trendingCache.coins, skipped: trendingCache.skipped, ...session() });
+      }
+      const r = await live(confirmLive, (client) => fetchTrending(client));
+      if (!('value' in r)) return r;
+      trendingCache = { at: now, ...r.value };
+      return reply(200, { ...base, fetchedAt: new Date(now).toISOString(), fromCache: false, requestsUsed: r.calls, ...r.value, ...session() });
     },
     async asset(mode: Mode, id: string, refresh: boolean, confirmLive: boolean): Promise<Reply> {
       const noData = 'CoinGecko returned no market data for this coin (it may be inactive, newly listed, or not tracked for prices).';

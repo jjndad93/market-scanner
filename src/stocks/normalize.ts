@@ -59,6 +59,10 @@ export function normalizeStockDataset(input: unknown): NormalizedStockDataset {
         continue;
       }
       const bar: Bar = { date: b.date as string, close: b.close as number, volume: b.volume as number };
+      // Day open/high/low are optional and display-only: kept only when all three are valid and consistent.
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+      const o = num(b.open), h = num(b.high), l = num(b.low);
+      if (o !== null && h !== null && l !== null && l <= h && o >= l && o <= h && bar.close >= l && bar.close <= h) Object.assign(bar, { open: o, high: h, low: l });
       const seen = byDate.get(bar.date);
       if (seen === undefined) byDate.set(bar.date, bar);
       else if (seen === null || seen.close !== bar.close || seen.volume !== bar.volume) {
@@ -72,6 +76,7 @@ export function normalizeStockDataset(input: unknown): NormalizedStockDataset {
     stocks.push({
       symbol,
       name: isText(raw.name) ? raw.name : symbol,
+      ...(d.kind === 'live' && isRecord(raw.security) && isText(raw.security.label) ? { security: raw.security as unknown as StockSnapshot['security'] } : {}),
       bars,
       invalidBars,
       dataKind: d.kind === 'live' ? 'verified_market_data' : 'test_data',

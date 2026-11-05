@@ -49,7 +49,9 @@ async function fetchWith(route: (ticker: string) => Route, universe: string[], m
 
 test('parseDailyBars: session dates come from the start-of-window timestamp in New York time', () => {
   const { bars, droppedCurrentSession } = parseDailyBars({ status: 'OK', results: [bar('2026-10-19', 10, 5), bar('2026-10-20', 11, 6)] }, NOW);
-  assert.deepEqual(bars, [{ date: '2026-10-19', close: 10, volume: 5 }, { date: '2026-10-20', close: 11, volume: 6 }]);
+  assert.deepEqual(bars.map((b) => ({ date: b.date, close: b.close, volume: b.volume })), [{ date: '2026-10-19', close: 10, volume: 5 }, { date: '2026-10-20', close: 11, volume: 6 }]);
+  // The day's open, high and low are passed through for the normalizer to validate (display-only).
+  assert.deepEqual([bars[0]!.open, bars[0]!.high, bars[0]!.low], [10, 10, 10]);
   assert.equal(droppedCurrentSession, 0);
   assert.deepEqual(parseDailyBars({ status: 'OK', resultsCount: 0 }, NOW).bars, []); // no results: no bars, nothing invented
   assert.throws(() => parseDailyBars([], NOW), MassiveResponseError);

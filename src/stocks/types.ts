@@ -6,12 +6,18 @@ export interface RawBar {
   date: unknown;
   close: unknown;
   volume: unknown;
+  /** Optional day open, high and low (display-only warnings; never scored). */
+  open?: unknown;
+  high?: unknown;
+  low?: unknown;
 }
 
 /** Provider-neutral input for one stock. */
 export interface RawStock {
   symbol: string;
   name?: string;
+  /** Live only: the security type from the provider's ticker reference (see massive-tickers.ts). */
+  security?: SecurityInfo;
   /** Daily bars, any order; completed sessions only. */
   bars?: RawBar[] | null;
   /** Live only: why this stock has no bars (the request failed, or was never sent). */
@@ -36,11 +42,29 @@ export interface Bar {
   date: string;
   close: number;
   volume: number;
+  /** Day open, high and low when the source gave consistent values (low <= open, close <= high); else absent. */
+  open?: number;
+  high?: number;
+  low?: number;
+}
+
+/** What kind of security a ticker is, from the provider's reference data (or unknown). */
+export interface SecurityInfo {
+  /** common stock, depositary receipt, exchange-traded product, or not checked. */
+  kind: 'common' | 'adr' | 'etf' | 'unknown';
+  /** The provider's type code (CS, ADRC, ETF, ETN, ...), or null when not checked. */
+  typeCode: string | null;
+  /** Short label for display, e.g. "Common stock", "ETF". */
+  label: string;
+  /** Where the type came from. */
+  basis: string;
 }
 
 export interface StockSnapshot {
   symbol: string;
   name: string;
+  /** Security type, when known (live market-wide scans). */
+  security?: SecurityInfo;
   /** Valid bars, oldest first, one per session date. */
   bars: Bar[];
   /** Bars that were malformed, or conflicting duplicates of a date; counted, never used. */

@@ -19,5 +19,15 @@
     { "id": "syn-outside", "symbol": "sout", "name": "Synthetic Outsider", "current_price": 0.0437, "market_cap": 21000000, "market_cap_rank": 612, "total_volume": 1900000, "high_24h": 0.046, "low_24h": 0.041, "price_change_percentage_24h": 6.3, "price_change_percentage_7d_in_currency": 2.2, "last_updated": "2026-10-21T11:55:00.000Z" },
     { "id": "syn-alpha-classic", "symbol": "salp", "name": "Synthetic Alpha Classic", "current_price": 0.0021, "market_cap": 640000, "market_cap_rank": 1880, "total_volume": 15000, "high_24h": 0.0023, "low_24h": 0.002, "price_change_percentage_24h": -3.1, "price_change_percentage_7d_in_currency": null, "last_updated": "2026-10-21T10:40:00.000Z" },
     { "id": "syn-alpha-bridged", "symbol": "salp", "name": "Synthetic Alpha (Bridged)", "current_price": null, "market_cap": 0, "market_cap_rank": null, "total_volume": null, "high_24h": null, "low_24h": null, "price_change_percentage_24h": null, "price_change_percentage_7d_in_currency": null, "last_updated": null }
-  ]
+  ],
+  "trending": {
+    "_comment": "TEST DATA: /search/trending response shape (coins[].item), invented coins. The fourth entry is malformed on purpose.",
+    "coins": [
+      { "item": { "id": "syn-echo", "coin_id": 9001, "name": "Synthetic Echo", "symbol": "SECH", "market_cap_rank": 160, "score": 0 } },
+      { "item": { "id": "syn-outside", "coin_id": 9002, "name": "Synthetic Outside", "symbol": "SOUT", "market_cap_rank": 2400, "score": 1 } },
+      { "item": { "id": "syn-alpha", "coin_id": 9003, "name": "Synthetic Alpha", "symbol": "SALP", "market_cap_rank": 41, "score": 2 } },
+      { "item": { "id": "BAD ID", "name": "Broken", "symbol": "BRK" } },
+      { "item": { "id": "syn-newcomer", "coin_id": 9005, "name": "Synthetic Newcomer", "symbol": "SNEW", "market_cap_rank": null, "score": 4 } }
+    ]
+  }
 }

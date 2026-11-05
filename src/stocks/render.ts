@@ -1,3 +1,4 @@
+import { MARKET_MOVERS } from '../providers/massive.ts';
 import { KIND_LABEL } from '../core/evidence.ts';
 import { terminalSafe } from '../core/format.ts';
 import { nextStepForStop, renderSummary, type ScanSummary, tally } from '../core/summary.ts';
@@ -22,7 +23,7 @@ export const EXCLUSION_LABEL: Record<StockExclusionCode, string> = {
 
 const signedPct = (p: number) => `${p > 0 ? '+' : ''}${p.toFixed(1)}%`;
 const shares = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : `${n}`);
-const label = (c: StockCandidate) => (c.stock.name === c.stock.symbol ? terminalSafe(c.stock.symbol) : `${terminalSafe(c.stock.name)} (${terminalSafe(c.stock.symbol)})`);
+const label = (c: StockCandidate) => `${c.stock.name === c.stock.symbol ? terminalSafe(c.stock.symbol) : `${terminalSafe(c.stock.name)} (${terminalSafe(c.stock.symbol)})`}${c.stock.security && c.stock.security.kind !== 'common' ? ` [${terminalSafe(c.stock.security.label)}]` : ''}`;
 const dataLine = (c: StockCandidate) => `Catalyst: NOT VERIFIED | Data: session ${c.metrics.lastDate}, end of day [${KIND_LABEL[c.stock.dataKind]}]`;
 
 function renderCandidate(c: StockCandidate, i: number): string[] {
@@ -54,7 +55,7 @@ export function summarizeStockScan(r: StockScanResult): ScanSummary {
     mode: live ? 'live' : 'offline',
     data: live ? 'live Massive end-of-day bars (latest completed session; no intraday data)' : 'synthetic fixture (TEST DATA), not market data',
     source: r.dataset.source,
-    scope: live ? (/market-wide movers/.test(r.dataset.label) ? `${r.universe} market-wide gainers priced $5-$50 (previous session)` : `${r.universe} tickers in the fixed initial universe`) : `${r.universe} tickers in the fixture`,
+    scope: live ? (/market-wide movers/.test(r.dataset.label) ? `${r.universe} market-wide gainers priced $${MARKET_MOVERS.minPrice}-$${MARKET_MOVERS.maxPrice} (previous session)` : `${r.universe} tickers in the fixed initial universe`) : `${r.universe} tickers in the fixture`,
     status: partialReasons.length > 0 ? 'partial' : 'complete',
     partialReasons,
     counts: {

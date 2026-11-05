@@ -192,3 +192,13 @@ td.asset .plain-caution { margin: 2px 0; color: var(--warn); font-size: 12px; wh
 .profile-table td { border: 0; padding: 3px 8px 3px 0; vertical-align: top; }
 .profile-table td.pl { color: var(--muted); white-space: nowrap; width: 1%; }
 .outlook { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+
+/* Compact row summary (reason, evidence quality, key risk, next step). */
+td.asset .brief { margin-top: 6px; font-size: 12px; line-height: 1.4; white-space: normal; max-width: 34ch; }
+td.asset .brief > div { margin: 2px 0; }
+.brief .brief-reason { color: var(--muted, inherit); }
+.brief .brief-risk { color: var(--warn); }
+.brief .brief-next { font-style: italic; }
+.brief .ev { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; font-weight: 600; border: 1px solid currentColor; }
+.brief .ev-limited, .brief .ev-test_data { color: var(--warn); }
+.brief .ev-single_source { opacity: 0.85; }

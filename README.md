@@ -118,8 +118,8 @@ The flag thresholds are informational heuristics.
 
 If the price lies outside the provider's own 24h low–high (snapshots taken at different times), the
 range is not computed and the reason is shown. Not available: an intraday price series, the bid/ask
-spread, and, for stocks, the intraday range (the end-of-day bars carry a high and low, but they are
-not parsed yet).
+spread, and, for stocks, intraday prices (the day's open, high and low are now read from the
+end-of-day bars and shown as the day's range, close vs high and the opening gap).
 
 **Re-run** repeats the last scan. Synthetic results carry a TEST DATA banner.
 
@@ -930,6 +930,24 @@ The default maximum unit price on the dashboard is now $50.
 3. The **15 biggest gainers** get the usual per-ticker history and scoring (20-session volume baseline, mover and watchlist rules).
 
 The limits are in `MARKET_MOVERS` in `src/providers/massive.ts`. A run uses about 17 requests at the free plan's pace (12.5 s apart), so 3-4 minutes. If two sessions cannot be found, the scan falls back to the fixed list and says so in its notes.
+
+**Security types (added 2026-10-28).** Before ranking, the scan reads Massive's **All Tickers** reference (`/v3/reference/tickers`, free on Basic; up to 15 pages, cached on this computer for 7 days in `%LOCALAPPDATA%\market-scanner\massive-tickers`). Ordinary stocks and ADRs are kept; ordinary ETFs/ETNs are kept and labelled (e.g. `[ETF]`); **leveraged and inverse ETFs/ETNs** (detected from the fund name, e.g. "2X", "Ultra", "Bear", "Inverse") and warrants, rights, units and preferreds are left out, and the notes count what was left out and why. When the reference cannot be loaded, stocks are still evaluated and shown as "Security type not checked". The weekly refresh costs about 12 extra requests once a week; on other days the run stays at about 17.
+
+**Liquidity pre-check.** The scanner requires a 20-session *median* of $20M traded, but the gainers list used to pick by one day's $20M, so one-day spikes could use up the 15 slots and then fail. Gainers that also traded $20M in the previous session are now picked first. The scanner's own thresholds are unchanged (`test/rules-locked.test.ts` locks them).
+
+**Stock warnings (display only).** From the session's open, high and low: closing 10%+ below the day's high, a day's range of 15%+, or a gap of 8%+ from the previous close (`STOCK_RISK_FLAGS` in `src/web/rows.ts`). They never change a score.
+
+## Track record (candidate journal)
+
+After every **live** scan the dashboard saves the evaluated rows to `%LOCALAPPDATA%\market-scanner\candidate-journal` (one small JSON file per scan, kept 180 days; never test data, never sent anywhere). A *candidate* is a row the scanner qualified (Mover or Watchlist). Its result after **1, 3 and 7 days** is measured from the price when it was first flagged to the first later scan that saw the same asset in that window. This costs no request and nothing is estimated: an asset no later scan observed stays "not measured" (common for stocks, which a later scan sees only if they are among that day's gainers). The dashboard shows one line under the scan summary and the details under "How earlier candidates did". Past results do not predict future moves.
+
+## Row summary and attention check
+
+Each row shows, under the asset name: why it is listed, **evidence quality** (Test data / Limited, with the reason / One source, not independently confirmed), the **key risk**, and the **next step** (`src/web/brief.ts`). The scan's full caution list is under the row's "Cautions, category & volatility". These are kept separate from the scanner's score (market confirmation) and from the news panel (catalyst); nothing is blended into one number.
+
+**Attention (crypto, optional):** "Check trending searches" reads CoinGecko's `/search/trending` (top coins by CoinGecko user searches, last 24 hours; 1 request after you confirm, cached 30 minutes; offline uses test data) and marks matching rows "Attention: #n on CoinGecko's trending searches". It is search interest on one site, **not** social-media coverage, sentiment or evidence of buying.
+
+**Sources checked 2026-10-28, not added:** X API (paid per post read), LunarCrush (paid, no free API), Santiment free tier (1,000 calls/month, restricted metrics lagged 30 days), Reddit (API access now needs approval), Bluesky search (intermittent 403s), Google Trends API (alpha only), StockTwits (no official API information found). SEC EDGAR (`data.sec.gov`, no key, 10 requests/second, contact User-Agent) and Wikimedia pageviews (no key) are accessible and are the best next free catalyst/attention sources; neither is wired in yet.
 
 ## Dashboard conveniences
 

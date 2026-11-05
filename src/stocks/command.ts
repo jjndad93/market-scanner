@@ -5,6 +5,7 @@ import { createHttpClient } from '../providers/http.ts';
 import { MARKET_MOVERS, MASSIVE_BASE_URL, MASSIVE_KEY_ENV, MASSIVE_KEY_HEADER, MASSIVE_MIN_INTERVAL_MS, MOVERS_SOURCE, fetchMarketMovers, fetchStockDataset } from '../providers/massive.ts';
 import type { ScanCommandDeps } from '../scanner/command.ts';
 import { MISSING_KEY_NEXT_STEP, parseMaxRequests, terminalSafeJson } from '../scanner/command.ts';
+import { REFERENCE_MAX_PAGES, classifyTicker, loadTickerReference, tickerReferenceDir } from '../providers/massive-tickers.ts';
 import { runStockScan } from './analyze.ts';
 import { normalizeStockDataset } from './normalize.ts';
 import { renderStockReport, summarizeStockScan } from './render.ts';
@@ -67,8 +68,9 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
     deps.err('--max-requests is only for live scans (--live).');
     return 1;
   }
-  // Movers: 2 market-summary requests (3 around a holiday) plus one per gainer.
-  let maxRequests = values.movers ? MARKET_MOVERS.count + 3 : STOCK_UNIVERSE.length;
+  // Movers: 2 market-summary requests (3 around a holiday) plus one per gainer, plus room for the weekly
+  // ticker-reference refresh (used only when the cached copy is older than 7 days).
+  let maxRequests = values.movers ? MARKET_MOVERS.count + 3 + REFERENCE_MAX_PAGES : STOCK_UNIVERSE.length;
   if (values['max-requests'] !== undefined) {
     const parsed = parseMaxRequests(values['max-requests']);
     if (parsed === null) {
@@ -99,7 +101,15 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
         const data = await fetchStockDataset({ client, clock: deps.clock, universe: STOCK_UNIVERSE, maxCalls: maxRequests, sleep: deps.sleep });
         return emit(data, deps.clock());
       }
-      const movers = await fetchMarketMovers({ client, clock: deps.clock, maxCalls: maxRequests, sleep: deps.sleep });
+      const pause = (ms: number) => (deps.sleep ?? ((t: number) => new Promise<void>((r) => setTimeout(r, t))))(ms);
+      // Security types first, so warrants, units and leveraged/inverse ETFs never take a gainer slot.
+      const reference = await loadTickerReference({
+        client, clock: deps.clock, maxCalls: maxRequests, reserve: MARKET_MOVERS.count + 3, cacheDir: tickerReferenceDir(deps.env),
+        minIntervalMs: MASSIVE_MIN_INTERVAL_MS, sleep: pause,
+      });
+      if (reference.requestsUsed > 0) await pause(MASSIVE_MIN_INTERVAL_MS);
+      const securityFilter = (t: string) => { const c = classifyTicker(t, reference.ref); return c.keep ? null : c.reason; };
+      const movers = await fetchMarketMovers({ client, clock: deps.clock, maxCalls: maxRequests, sleep: deps.sleep, securityFilter });
       const useMovers = movers.tickers.length > 0;
       if (movers.requestsUsed > 0 && client.callsMade < maxRequests) await (deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(MASSIVE_MIN_INTERVAL_MS);
       const data = await fetchStockDataset({
@@ -108,7 +118,13 @@ export async function runStockScanCommand(args: string[], deps: ScanCommandDeps)
       });
       data.dataset.label = useMovers ? 'Massive end-of-day snapshot (market-wide movers)' : data.dataset.label;
       data.dataset.source = `${MOVERS_SOURCE}; ${data.dataset.source}`;
-      data.dataset.notes.unshift(...movers.notes);
+      data.dataset.notes.unshift(...movers.notes, reference.note);
+      // Names and security types for display (the scanner's rules and scores do not use them).
+      for (const s of data.stocks) {
+        const c = classifyTicker(s.symbol, reference.ref);
+        if (c.name) s.name = c.name;
+        s.security = c.security;
+      }
       return emit(data, deps.clock());
     } catch (e) {
       // Errors never contain the key; redact here as well, defensively (with and without the prefix).

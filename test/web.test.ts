@@ -177,3 +177,31 @@ test('status reports key presence only; frontend assets never contain or request
   }
   assert.deepEqual([parsePort([]), parsePort(['--port', '5000']), parsePort(['--port', '80']), parsePort(['--port', 'x'])], [4173, 5000, null, null]);
 });
+
+test('candidate journal: a live scan is saved on this computer and the track record is returned; offline scans are never saved', async () => {
+  const { mkdtempSync, readdirSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const base = mkdtempSync(join(tmpdir(), 'web-journal-'));
+  try {
+    const coin = (id: string) => ({ id, symbol: id.slice(4), name: `Synthetic ${id}`, current_price: 5, market_cap: 1e9, total_volume: 50e6, price_change_percentage_24h: 0.5, price_change_percentage_7d_in_currency: 1, last_updated: '2026-10-21T11:57:00.000Z' });
+    const chart = { total_volumes: Array.from({ length: 91 }, (_, i) => [Date.UTC(2026, 9, 21) - (91 - i) * DAY_MS, 20e6]) };
+    const f = counting((url) => ({ status: 200, body: url.includes('/coins/markets') ? ['syn-a', 'syn-b'].map(coin) : chart }));
+    const { svc, env } = service(f.fn, { COINGECKO_DEMO_API_KEY: KEY, LOCALAPPDATA: base });
+    const dir = join(base, 'market-scanner', 'candidate-journal');
+    const offline = parse(await handleRequest(post({ mode: 'offline' }), svc, env, PORT));
+    assert.equal(offline.trackRecord.scans, 0);
+    assert.deepEqual(readdirSync(base).includes('market-scanner') ? readdirSync(dir) : [], []);
+    const r = await handleRequest(post({ mode: 'live', maxRequests: 3, confirmLive: true }), svc, env, PORT);
+    assert.equal(r.status, 200, r.body);
+    const files = readdirSync(dir);
+    assert.equal(files.length, 1);
+    assert.match(files[0]!, /^crypto-2026-10-21T/);
+    const data = parse(r);
+    assert.equal(data.trackRecord.scans, 1);
+    assert.equal(data.trackRecord.stats.length, 3);
+    assert.ok(!readFileSync(join(dir, files[0]!), 'utf8').includes(KEY));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});

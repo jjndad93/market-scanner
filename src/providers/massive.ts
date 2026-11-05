@@ -58,7 +58,7 @@ export function parseDailyBars(json: unknown, now: Date): { bars: RawBar[]; drop
       droppedCurrentSession++;
       continue;
     }
-    bars.push({ date, close: isRecord(r) ? r.c : undefined, volume: isRecord(r) ? r.v : undefined });
+    bars.push({ date, close: isRecord(r) ? r.c : undefined, volume: isRecord(r) ? r.v : undefined, open: isRecord(r) ? r.o : undefined, high: isRecord(r) ? r.h : undefined, low: isRecord(r) ? r.l : undefined });
   }
   return { bars, droppedCurrentSession };
 }
@@ -168,8 +168,14 @@ export function parseGroupedDaily(json: unknown): Map<string, { close: number; v
 
 export interface MoversResult { tickers: string[]; sessions: string[]; notes: string[]; requestsUsed: number }
 
+/**
+ * Optional security check applied BEFORE gainers take a slot (see massive-tickers.ts): returns a
+ * reason to leave the ticker out (warrant, unit, leveraged ETF, ...), or null to keep it.
+ */
+export type SecurityFilter = (ticker: string) => string | null;
+
 /** Finds the latest two sessions and returns the biggest 1-day gainers within the limits. Never invents data. */
-export async function fetchMarketMovers(o: { client: HttpClient; clock: () => Date; maxCalls: number; minIntervalMs?: number; sleep?: (ms: number) => Promise<void>; limits?: Partial<typeof MARKET_MOVERS> }): Promise<MoversResult> {
+export async function fetchMarketMovers(o: { client: HttpClient; clock: () => Date; maxCalls: number; minIntervalMs?: number; sleep?: (ms: number) => Promise<void>; limits?: Partial<typeof MARKET_MOVERS>; securityFilter?: SecurityFilter }): Promise<MoversResult> {
   const L = { ...MARKET_MOVERS, ...o.limits };
   const sleep = o.sleep ?? realSleep;
   const start = o.client.callsMade;
@@ -188,23 +194,38 @@ export async function fetchMarketMovers(o: { client: HttpClient; clock: () => Da
     return { tickers: [], sessions: sessions.map((x) => x.date), requestsUsed, notes: [`Market-wide movers: two recent trading sessions were not found within ${requestsUsed} request(s), so the fixed list was used instead.`] };
   }
   const [latest, prev] = sessions as [typeof sessions[0], typeof sessions[0]];
-  const ranked: { t: string; chg: number }[] = [];
+  const ranked: { t: string; chg: number; liquidBefore: boolean }[] = [];
   let inRange = 0;
+  const leftOut = new Map<string, string[]>(); // reason -> tickers (security check)
   for (const [t, b] of latest.bars) {
     if (!PLAIN_TICKER.test(t)) continue;
     const p = prev.bars.get(t);
     if (!p || b.close < L.minPrice || b.close > L.maxPrice || b.close * b.volume < L.minDollarVolume) continue;
     inRange++;
-    ranked.push({ t, chg: (b.close / p.close - 1) * 100 });
+    const chg = (b.close / p.close - 1) * 100;
+    if (chg <= 0) continue;
+    const why = o.securityFilter?.(t) ?? null;
+    if (why !== null) {
+      leftOut.set(why, [...(leftOut.get(why) ?? []), t]);
+      continue;
+    }
+    // Pre-check, no extra request: the scanner later requires a 20-session MEDIAN of $20M+ traded. A stock
+    // that also cleared the floor the session BEFORE its jump is far more likely to pass, so those take
+    // the slots first; one-day spikes fill any slots left. The scanner's own rule is unchanged.
+    ranked.push({ t, chg, liquidBefore: p.close * p.volume >= L.minDollarVolume });
   }
-  ranked.sort((a, b) => b.chg - a.chg);
-  const top = ranked.filter((r) => r.chg > 0).slice(0, L.count);
+  ranked.sort((a, b) => Number(b.liquidBefore) - Number(a.liquidBefore) || b.chg - a.chg);
+  const top = ranked.slice(0, L.count);
+  const spikes = top.filter((r) => !r.liquidBefore).length;
+  const leftOutNote = [...leftOut].map(([why, ts]) => `${why}: ${ts.length} (${ts.slice(0, 6).join(', ')}${ts.length > 6 ? ', ...' : ''})`).join('; ');
   return {
     tickers: top.map((r) => r.t),
     sessions: [latest.date, prev.date],
     requestsUsed,
     notes: [
       `Market-wide movers: ${latest.bars.size.toLocaleString('en-US')} US stocks on ${latest.date} (vs ${prev.date}); ${inRange.toLocaleString('en-US')} were priced $${L.minPrice}-$${L.maxPrice} with at least $${(L.minDollarVolume / 1e6).toFixed(0)}M traded; the ${top.length} biggest gainers were evaluated (${requestsUsed} request(s) for the market summary).`,
+      `Liquidity pre-check: gainers that also traded $${(L.minDollarVolume / 1e6).toFixed(0)}M+ on ${prev.date} were picked first (${top.length - spikes} of ${top.length}); ${spikes} one-day spike(s) filled the remaining slots and are likely to fail the scanner's 20-session liquidity rule.`,
+      ...(leftOutNote ? [`Left out before evaluation: ${leftOutNote}.`] : []),
       'Gainers are picked by the previous session\'s close-to-close change only; the evaluation below adds the 20-session volume baseline and the usual scoring.',
     ],
   };
